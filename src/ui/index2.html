@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCP Gateway — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d0f14;
+  --bg2: #13161d;
+  --bg3: #1a1e28;
+  --bg4: #222736;
+  --border: #2a3045;
+  --border2: #374059;
+  --accent: #00e5a0;
+  --accent2: #00b87a;
+  --accent-dim: rgba(0,229,160,0.08);
+  --accent-dim2: rgba(0,229,160,0.15);
+  --blue: #4d9fff;
+  --blue-dim: rgba(77,159,255,0.1);
+  --red: #ff5e5e;
+  --red-dim: rgba(255,94,94,0.1);
+  --amber: #ffb84d;
+  --amber-dim: rgba(255,184,77,0.1);
+  --purple: #a78bfa;
+  --text: #e2e8f0;
+  --text2: #8892a4;
+  --text3: #5a6478;
+  --mono: 'IBM Plex Mono', monospace;
+  --sans: 'IBM Plex Sans', sans-serif;
+  --radius: 8px;
+  --sidebar: 220px;
+}
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+  font-size: 14px;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: var(--sidebar);
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  z-index: 10;
+}
+
+.logo {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.logo-mark {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.logo-name {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.nav { padding: 12px 10px; flex: 1; }
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: var(--text2);
+  font-size: 13px;
+  transition: all 0.15s;
+  margin-bottom: 2px;
+  user-select: none;
+}
+.nav-item:hover { background: var(--bg3); color: var(--text); }
+.nav-item.active { background: var(--accent-dim); color: var(--accent); }
+.nav-item.active .nav-icon { color: var(--accent); }
+.nav-icon { font-size: 15px; width: 18px; text-align: center; flex-shrink: 0; }
+
+.nav-section {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text3);
+  padding: 14px 10px 6px;
+}
+
+.sidebar-footer {
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+}
+.status-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  box-shadow: 0 0 6px var(--accent);
+}
+.status-text { font-family: var(--mono); font-size: 11px; color: var(--text3); }
+
+/* ── Main ── */
+.main {
+  margin-left: var(--sidebar);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  height: 56px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.page-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+.page-breadcrumb {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 1px;
+}
+
+.topbar-actions { display: flex; gap: 10px; align-items: center; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-family: var(--sans);
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #0a0f0a;
+}
+.btn-primary:hover { background: var(--accent2); }
+.btn-ghost {
+  background: transparent;
+  color: var(--text2);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { border-color: var(--border2); color: var(--text); background: var(--bg3); }
+.btn-danger {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid rgba(255,94,94,0.2);
+}
+.btn-danger:hover { background: rgba(255,94,94,0.2); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* ── Content area ── */
+.content { padding: 28px; flex: 1; }
+
+/* ── Pages ── */
+.page { display: none; }
+.page.active { display: block; }
+
+/* ── Stats bar ── */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.stat-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+.stat-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  margin-bottom: 6px;
+}
+.stat-value {
+  font-size: 26px;
+  font-weight: 300;
+  color: var(--text);
+  line-height: 1;
+}
+.stat-accent { color: var(--accent); }
+
+/* ── Section header ── */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.section-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.section-subtitle {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 1px;
+}
+
+/* ── Table ── */
+.table-wrap {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+table { width: 100%; border-collapse: collapse; }
+thead tr { border-bottom: 1px solid var(--border); }
+th {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  padding: 10px 16px;
+  text-align: left;
+  font-weight: 400;
+}
+td {
+  padding: 11px 16px;
+  font-size: 13px;
+  color: var(--text2);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: var(--bg3); }
+td.primary { color: var(--text); font-weight: 500; }
+
+/* ── Badges ── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.badge-green { background: rgba(0,229,160,0.1); color: var(--accent); border: 1px solid rgba(0,229,160,0.2); }
+.badge-red   { background: var(--red-dim);        color: var(--red);    border: 1px solid rgba(255,94,94,0.2); }
+.badge-blue  { background: var(--blue-dim);        color: var(--blue);   border: 1px solid rgba(77,159,255,0.2); }
+.badge-amber { background: var(--amber-dim);       color: var(--amber);  border: 1px solid rgba(255,184,77,0.2); }
+.badge-gray  { background: var(--bg4);             color: var(--text3);  border: 1px solid var(--border); }
+
+/* ── Tag list ── */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg4);
+  color: var(--text2);
+  border: 1px solid var(--border);
+  margin: 2px;
+}
+
+/* ── Modal ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  width: 520px;
+  max-width: 95vw;
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: slideUp 0.2s ease;
+}
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.modal-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-title { font-size: 15px; font-weight: 500; }
+.modal-close {
+  background: none; border: none; color: var(--text3);
+  cursor: pointer; font-size: 18px; line-height: 1;
+  padding: 2px 6px; border-radius: 4px;
+}
+.modal-close:hover { color: var(--text); background: var(--bg3); }
+.modal-body { padding: 20px 24px; }
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+/* ── Form ── */
+.form-group { margin-bottom: 16px; }
+.form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+.form-label span { color: var(--text3); font-weight: 400; font-family: var(--mono); font-size: 11px; }
+.form-input, .form-select {
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--sans);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.form-input:focus, .form-select:focus { border-color: var(--accent); }
+.form-input::placeholder { color: var(--text3); }
+.form-select option { background: var(--bg3); }
+.form-hint { font-size: 11px; color: var(--text3); margin-top: 4px; font-family: var(--mono); }
+
+/* ── Permission Matrix ── */
+.perm-matrix {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.perm-server-row {
+  border-bottom: 1px solid var(--border);
+}
+.perm-server-row:last-child { border-bottom: none; }
+.perm-server-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg3);
+  cursor: pointer;
+  user-select: none;
+}
+.perm-server-header:hover { background: var(--bg4); }
+.perm-server-name {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.perm-chevron { color: var(--text3); transition: transform 0.2s; font-size: 12px; }
+.perm-server-row.open .perm-chevron { transform: rotate(90deg); }
+
+.perm-server-access {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toggle {
+  position: relative;
+  width: 36px; height: 20px;
+  display: inline-block;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px; height: 14px;
+  left: 2px; top: 2px;
+  background: var(--text3);
+  border-radius: 50%;
+  transition: 0.2s;
+}
+.toggle input:checked + .toggle-slider { background: var(--accent-dim2); border-color: var(--accent); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(16px); background: var(--accent); }
+
+.perm-tools-panel { display: none; padding: 12px 16px; }
+.perm-server-row.open .perm-tools-panel { display: block; }
+.perm-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.perm-tool-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.perm-tool-item:hover { border-color: var(--border2); }
+.perm-tool-item.allowed { border-color: rgba(0,229,160,0.3); background: var(--accent-dim); }
+.perm-tool-checkbox {
+  width: 14px; height: 14px;
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  background: var(--bg4);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  font-size: 10px;
+  transition: all 0.15s;
+}
+.perm-tool-item.allowed .perm-tool-checkbox {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+}
+.perm-tool-name { font-family: var(--mono); font-size: 12px; color: var(--text2); }
+.perm-tool-item.allowed .perm-tool-name { color: var(--accent); }
+
+/* ── Key display ── */
+.key-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-top: 12px;
+}
+.key-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.key-copy {
+  background: none; border: none; color: var(--text3);
+  cursor: pointer; font-size: 13px; padding: 2px 6px;
+  border-radius: 4px; transition: color 0.15s;
+}
+.key-copy:hover { color: var(--accent); }
+
+/* ── Empty state ── */
+.empty-state {
+  padding: 40px;
+  text-align: center;
+  color: var(--text3);
+  font-size: 13px;
+}
+.empty-icon { font-size: 28px; margin-bottom: 10px; opacity: 0.4; }
+
+/* ── Activity log ── */
+.log-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.log-entry:last-child { border-bottom: none; }
+.log-time { font-family: var(--mono); color: var(--text3); width: 75px; flex-shrink: 0; }
+.log-method { font-family: var(--mono); color: var(--blue); width: 100px; flex-shrink: 0; }
+.log-desc { color: var(--text2); flex: 1; }
+.log-status { font-family: var(--mono); font-size: 11px; }
+
+/* ── Scrollbar ── */
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-mark">MCP / Admin</div>
+    <div class="logo-name">Gateway Control</div>
+  </div>
+  <nav class="nav">
+    <div class="nav-section">Overview</div>
+    <div class="nav-item active" data-page="dashboard" onclick="showPage('dashboard')">
+      <span class="nav-icon">⬡</span> Dashboard
+    </div>
+    <div class="nav-section">Resources</div>
+    <div class="nav-item" data-page="servers" onclick="showPage('servers')">
+      <span class="nav-icon">◈</span> MCP Servers
+    </div>
+    <div class="nav-item" data-page="clients" onclick="showPage('clients')">
+      <span class="nav-icon">◉</span> Clients
+    </div>
+    <div class="nav-item" data-page="permissions" onclick="showPage('permissions')">
+      <span class="nav-icon">◫</span> Permissions
+    </div>
+    <div class="nav-section">System</div>
+    <div class="nav-item" data-page="logs" onclick="showPage('logs')">
+      <span class="nav-icon">≡</span> Activity Log
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <span class="status-dot"></span>
+    <span class="status-text">Gateway running</span>
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="main">
+
+  <!-- Topbar -->
+  <div class="topbar">
+    <div>
+      <div class="page-title" id="topbar-title">Dashboard</div>
+      <div class="page-breadcrumb" id="topbar-crumb">gateway / overview</div>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm" onclick="exportConfig()">⇣ Export config</button>
+      <button class="btn btn-primary btn-sm" id="topbar-action-btn" onclick="topbarAction()">+ Add server</button>
+    </div>
+  </div>
+
+  <!-- ─── DASHBOARD ─── -->
+  <div class="content">
+  <div class="page active" id="page-dashboard">
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">MCP Servers</div>
+        <div class="stat-value stat-accent" id="stat-servers">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Clients</div>
+        <div class="stat-value" id="stat-clients">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Tools</div>
+        <div class="stat-value" id="stat-tools">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Permissions</div>
+        <div class="stat-value" id="stat-perms">0</div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <div>
+        <div class="section-title">Registered servers</div>
+        <div class="section-subtitle">All MCP servers connected to this gateway</div>
+      </div>
+    </div>
+    <div class="table-wrap" id="dash-servers-table">
+      <div class="empty-state"><div class="empty-icon">◈</div>No servers registered yet</div>
+    </div>
+
+    <div class="section-header">
+      <div>
+        <div class="section-title">Active clients</div>
+        <div class="section-subtitle">Clients with API keys and permission policies</div>
+      </div>
+    </div>
+    <div class="table-wrap" id="dash-clients-table">
+      <div class="empty-state"><div class="empty-icon">◉</div>No clients registered yet</div>
+    </div>
+  </div>
+
+  <!-- ─── SERVERS PAGE ─── -->
+  <div class="page" id="page-servers">
+    <div class="section-header">
+      <div>
+        <div class="section-title">MCP Servers</div>
+        <div class="section-subtitle">Register and manage upstream MCP servers</div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="openAddServerModal()">+ Register server</button>
+    </div>
+    <div class="table-wrap" id="servers-table">
+      <div class="empty-state"><div class="empty-icon">◈</div>No servers yet — register your first MCP server</div>
+    </div>
+  </div>
+
+  <!-- ─── CLIENTS PAGE ─── -->
+  <div class="page" id="page-clients">
+    <div class="section-header">
+      <div>
+        <div class="section-title">Clients</div>
+        <div class="section-subtitle">Manage API keys and client identities</div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="openAddClientModal()">+ Add client</button>
+    </div>
+    <div class="table-wrap" id="clients-table">
+      <div class="empty-state"><div class="empty-icon">◉</div>No clients yet — add your first client</div>
+    </div>
+  </div>
+
+  <!-- ─── PERMISSIONS PAGE ─── -->
+  <div class="page" id="page-permissions">
+    <div class="section-header">
+      <div>
+        <div class="section-title">Permission matrix</div>
+        <div class="section-subtitle">Control which clients can access which servers and tools</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px; display:flex; gap:10px; align-items:center;">
+      <label class="form-label" style="margin:0; white-space:nowrap">Select client</label>
+      <select class="form-select" style="max-width:260px;" id="perm-client-select" onchange="renderPermMatrix()">
+        <option value="">— choose a client —</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="savePermissions()" id="save-perm-btn" style="display:none">Save permissions</button>
+    </div>
+
+    <div id="perm-matrix-wrap">
+      <div class="empty-state" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);">
+        <div class="empty-icon">◫</div>Select a client to edit their permissions
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── LOGS PAGE ─── -->
+  <div class="page" id="page-logs">
+    <div class="section-header">
+      <div>
+        <div class="section-title">Activity log</div>
+        <div class="section-subtitle">Recent gateway events and tool calls</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Clear</button>
+    </div>
+    <div class="table-wrap" id="logs-wrap">
+      <div class="empty-state"><div class="empty-icon">≡</div>No activity yet</div>
+    </div>
+  </div>
+  </div>
+</main>
+
+<!-- ── Modal: Add Server ── -->
+<div class="modal-overlay" id="modal-server">
+  <div class="modal" style="width:600px">
+    <div class="modal-header">
+      <div class="modal-title">Register MCP server</div>
+      <button class="modal-close" onclick="closeModal('modal-server')">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- Step 1: connection details -->
+      <div id="srv-step1">
+        <div class="form-group">
+          <label class="form-label">Server name <span>unique identifier</span></label>
+          <input class="form-input" id="srv-name" placeholder="e.g. github, database, gdrive">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Base URL</label>
+          <input class="form-input" id="srv-url" placeholder="http://localhost:8001">
+          <div class="form-hint">Gateway will POST JSON-RPC to {url}/mcp</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description <span>optional</span></label>
+          <input class="form-input" id="srv-desc" placeholder="Auto-filled from server if blank">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Upstream API key <span>optional</span></label>
+          <input class="form-input" id="srv-key" placeholder="Bearer token or API key for this server" type="password">
+        </div>
+      </div>
+
+      <!-- Step 2: preview results -->
+      <div id="srv-preview" style="display:none">
+        <div id="srv-preview-status" style="margin-bottom:14px;padding:10px 14px;border-radius:8px;font-size:13px;"></div>
+        <div id="srv-preview-tabs" style="display:none">
+          <div style="display:flex;gap:6px;margin-bottom:12px;" id="srv-tab-bar">
+            <button class="btn btn-ghost btn-sm srv-tab active" onclick="showSrvTab('tools')" data-tab="tools">Tools <span id="tc" class="badge badge-blue" style="margin-left:4px">0</span></button>
+            <button class="btn btn-ghost btn-sm srv-tab" onclick="showSrvTab('resources')" data-tab="resources">Resources <span id="rc" class="badge badge-amber" style="margin-left:4px">0</span></button>
+            <button class="btn btn-ghost btn-sm srv-tab" onclick="showSrvTab('prompts')" data-tab="prompts">Prompts <span id="pc" class="badge badge-gray" style="margin-left:4px">0</span></button>
+          </div>
+          <div id="srv-tab-tools" class="srv-tab-pane" style="max-height:220px;overflow-y:auto;"></div>
+          <div id="srv-tab-resources" class="srv-tab-pane" style="display:none;max-height:220px;overflow-y:auto;"></div>
+          <div id="srv-tab-prompts" class="srv-tab-pane" style="display:none;max-height:220px;overflow-y:auto;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="srv-back-btn" onclick="srvBack()" style="display:none">← Back</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-server')">Cancel</button>
+      <button class="btn btn-primary" id="srv-main-btn" onclick="srvMainAction()">Test connection →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal: Add Client ── -->
+<div class="modal-overlay" id="modal-client">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Add client</div>
+      <button class="modal-close" onclick="closeModal('modal-client')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Client name</label>
+        <input class="form-input" id="cli-name" placeholder="e.g. Data Analyst Bot, DevOps Agent">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description <span>optional</span></label>
+        <input class="form-input" id="cli-desc" placeholder="What is this client used for?">
+      </div>
+      <div class="form-group">
+        <label class="form-label">API key</label>
+        <div style="display:flex; gap:8px;">
+          <input class="form-input" id="cli-key" placeholder="Paste a key or generate one">
+          <button class="btn btn-ghost" onclick="generateKey()" style="white-space:nowrap; flex-shrink:0;">⟳ Generate</button>
+        </div>
+        <div class="form-hint">Clients send this as X-Api-Key header</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-client')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveClient()">Add client</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal: View Key ── -->
+<div class="modal-overlay" id="modal-key">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">API key — <span id="key-modal-client"></span></div>
+      <button class="modal-close" onclick="closeModal('modal-key')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-hint" style="margin-bottom:8px;">Send this as the <code style="color:var(--accent)">X-Api-Key</code> header with every request to the gateway.</div>
+      <div class="key-display">
+        <div class="key-value" id="key-modal-value"></div>
+        <button class="key-copy" onclick="copyKey()" title="Copy">⎘</button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('modal-key')">Done</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
