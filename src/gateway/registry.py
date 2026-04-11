@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Optional
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 import httpx
 import logging
 
@@ -104,17 +105,60 @@ class DiscoveryResult:
     prompts:          list[DiscoveredPrompt]   = field(default_factory=list)
 
 
+# ── Transport-aware response parser ─────────────────────────────
+
+def _parse_response(resp: httpx.Response) -> dict:
+    """
+    Parse an MCP response regardless of transport encoding.
+
+    Plain JSON servers  → Content-Type: application/json  → resp.json()
+    FastMCP / streamable-HTTP → Content-Type: text/event-stream
+        Body looks like:
+            event: message\r\n
+            data: {"jsonrpc":"2.0","id":1,"result":{...}}\r\n
+            \r\n
+    We extract the first `data:` line and parse it.
+    """
+    ct = resp.headers.get("content-type", "")
+    if "text/event-stream" in ct:
+        for line in resp.text.splitlines():
+            line = line.strip()
+            if line.startswith("data:"):
+                payload = line[5:].strip()
+                if payload:
+                    return json.loads(payload)
+        # No data line found — fall through to json attempt
+    try:
+        return resp.json()
+    except Exception:
+        return {}
+
+
 # ── Core discovery ───────────────────────────────────────────────
 
 async def discover(server_url: str, server_name: str, upstream_key: str = "") -> DiscoveryResult:
     """
-    Full MCP handshake against server_url/mcp.
-    Returns DiscoveryResult with everything the server exposes.
+    Full MCP handshake — works with any compliant server transport:
+
+      • Plain JSON servers  (our example_upstream, custom FastAPI servers)
+        → sends plain POST, receives application/json
+
+      • FastMCP streamable-HTTP  (fastmcp >= 2.x)
+        → requires Accept: application/json, text/event-stream
+        → returns SSE-wrapped JSON  (event: message / data: {...})
+        → requires Mcp-Session-Id on all calls after initialize
+
+    The function auto-detects which mode to use from the initialize response.
     """
-    url     = server_url.rstrip("/") + "/mcp"
-    headers = {"Content-Type": "application/json"}
+    url = server_url.rstrip("/") + "/mcp"
+
+    base_headers = {
+        "Content-Type": "application/json",
+        # Required by FastMCP streamable-HTTP; harmless for plain JSON servers
+        "Accept": "application/json, text/event-stream",
+    }
     if upstream_key:
-        headers["Authorization"] = f"Bearer {upstream_key}"
+        base_headers["Authorization"] = f"Bearer {upstream_key}"
 
     result = DiscoveryResult(success=False)
 
@@ -129,9 +173,9 @@ async def discover(server_url: str, server_name: str, upstream_key: str = "") ->
                     "capabilities": {},
                     "clientInfo": {"name": "mcp-gateway", "version": "1.0.0"}
                 }
-            }, headers=headers)
+            }, headers=base_headers)
             resp.raise_for_status()
-            init_data = resp.json()
+            init_data = _parse_response(resp)
         except Exception as e:
             result.error = f"initialize failed: {e}"
             logger.warning(f"[{server_name}] {result.error}")
@@ -143,65 +187,66 @@ async def discover(server_url: str, server_name: str, upstream_key: str = "") ->
         result.capabilities     = init_result.get("capabilities", {})
         result.success          = True
 
-        caps = result.capabilities
+        # FastMCP returns Mcp-Session-Id; carry it forward for all subsequent calls
+        session_id = resp.headers.get("mcp-session-id") or resp.headers.get("Mcp-Session-Id")
+        call_headers = dict(base_headers)
+        if session_id:
+            call_headers["Mcp-Session-Id"] = session_id
+            logger.debug(f"[{server_name}] session_id={session_id}")
+
+        # ── Helper: send one JSON-RPC call ──────────────────────
+        async def rpc(method: str, id_: int) -> dict:
+            r = await client.post(url, json={
+                "jsonrpc": "2.0", "id": id_, "method": method, "params": {}
+            }, headers=call_headers)
+            return _parse_response(r)
 
         # ── Step 2: tools/list ──────────────────────────────────
-        if "tools" in caps or True:   # always attempt — many servers omit capabilities
-            try:
-                resp = await client.post(url, json={
-                    "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
-                }, headers=headers)
-                tools_raw = resp.json().get("result", {}).get("tools", [])
-                for t in tools_raw:
-                    raw = t.get("name", "") if isinstance(t, dict) else str(t)
-                    if not raw:
-                        continue
-                    result.tools.append(DiscoveredTool(
-                        raw_name      = raw,
-                        prefixed_name = f"{server_name}__{raw}",
-                        description   = t.get("description", "") if isinstance(t, dict) else "",
-                        input_schema  = t.get("inputSchema", {}) if isinstance(t, dict) else {},
-                    ))
-                logger.info(f"[{server_name}] discovered {len(result.tools)} tools")
-            except Exception as e:
-                logger.warning(f"[{server_name}] tools/list failed: {e}")
+        try:
+            data = await rpc("tools/list", 2)
+            tools_raw = data.get("result", {}).get("tools", [])
+            for t in tools_raw:
+                raw = t.get("name", "") if isinstance(t, dict) else str(t)
+                if not raw:
+                    continue
+                result.tools.append(DiscoveredTool(
+                    raw_name      = raw,
+                    prefixed_name = f"{server_name}__{raw}",
+                    description   = t.get("description", "") if isinstance(t, dict) else "",
+                    input_schema  = t.get("inputSchema", {}) if isinstance(t, dict) else {},
+                ))
+            logger.info(f"[{server_name}] discovered {len(result.tools)} tools")
+        except Exception as e:
+            logger.warning(f"[{server_name}] tools/list failed: {e}")
 
         # ── Step 3: resources/list ──────────────────────────────
-        if "resources" in caps or True:
-            try:
-                resp = await client.post(url, json={
-                    "jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {}
-                }, headers=headers)
-                data = resp.json()
-                if "error" not in data:
-                    for r in data.get("result", {}).get("resources", []):
-                        result.resources.append(DiscoveredResource(
-                            uri         = r.get("uri", ""),
-                            name        = r.get("name", ""),
-                            description = r.get("description", ""),
-                            mime_type   = r.get("mimeType", ""),
-                        ))
-                    logger.info(f"[{server_name}] discovered {len(result.resources)} resources")
-            except Exception as e:
-                logger.debug(f"[{server_name}] resources/list not supported: {e}")
+        try:
+            data = await rpc("resources/list", 3)
+            if "error" not in data:
+                for r in data.get("result", {}).get("resources", []):
+                    result.resources.append(DiscoveredResource(
+                        uri         = r.get("uri", ""),
+                        name        = r.get("name", ""),
+                        description = r.get("description", ""),
+                        mime_type   = r.get("mimeType", ""),
+                    ))
+                logger.info(f"[{server_name}] discovered {len(result.resources)} resources")
+        except Exception as e:
+            logger.debug(f"[{server_name}] resources/list not supported: {e}")
 
         # ── Step 4: prompts/list ────────────────────────────────
-        if "prompts" in caps or True:
-            try:
-                resp = await client.post(url, json={
-                    "jsonrpc": "2.0", "id": 4, "method": "prompts/list", "params": {}
-                }, headers=headers)
-                data = resp.json()
-                if "error" not in data:
-                    for p in data.get("result", {}).get("prompts", []):
-                        result.prompts.append(DiscoveredPrompt(
-                            name        = p.get("name", ""),
-                            description = p.get("description", ""),
-                            arguments   = p.get("arguments", []),
-                        ))
-                    logger.info(f"[{server_name}] discovered {len(result.prompts)} prompts")
-            except Exception as e:
-                logger.debug(f"[{server_name}] prompts/list not supported: {e}")
+        try:
+            data = await rpc("prompts/list", 4)
+            if "error" not in data:
+                for p in data.get("result", {}).get("prompts", []):
+                    result.prompts.append(DiscoveredPrompt(
+                        name        = p.get("name", ""),
+                        description = p.get("description", ""),
+                        arguments   = p.get("arguments", []),
+                    ))
+                logger.info(f"[{server_name}] discovered {len(result.prompts)} prompts")
+        except Exception as e:
+            logger.debug(f"[{server_name}] prompts/list not supported: {e}")
 
     return result
 
