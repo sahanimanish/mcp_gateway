@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
 import httpx
 import logging
 
@@ -98,11 +99,6 @@ async def mcp_endpoint(
     method = body.get("method", "")
     rpc_id = body.get("id")
 
-    print(f"Received request from client '{client.name}': method={method}, id={rpc_id}")
-    print(f"Allowed tools for this client: {allowed_tools}")
-    print(f"Body: {body}")
-
-
     # ── initialize ──────────────────────────────────────────────
     if method == "initialize":
         await _log(db, "initialize", client.name, "—", 200)
@@ -139,8 +135,7 @@ async def mcp_endpoint(
     if method == "tools/call":
         params    = body.get("params", {})
         tool_name = params.get("name", "")
-        print(f"Client '{client.name}' is calling tool '{tool_name}'")
-        print(f"Allowed tools for this client: {allowed_tools}")
+
         if tool_name not in allowed_tools:
             await _log(db, "tools/call", client.name, tool_name, 403, "Access denied")
             return JSONResponse(rpc_error(rpc_id, -32603, f"Access denied: '{tool_name}'"), status_code=403)
@@ -151,8 +146,35 @@ async def mcp_endpoint(
             return JSONResponse(rpc_error(rpc_id, -32601, f"Tool not found: '{tool_name}'"), status_code=404)
 
         upstream_key = registry.get_server_key(tool_name) or ""
+        transport    = registry.get_transport(tool_name)
 
-        # Build upstream headers — include Accept for FastMCP compatibility
+        # Strip server prefix from tool name before forwarding
+        raw_name = tool_name.split("__", 1)[1] if "__" in tool_name else tool_name
+        forward_body = {**body, "params": {**body.get("params", {}), "name": raw_name}}
+
+        # ── SSE transport ────────────────────────────────────────
+        if transport == "sse":
+            try:
+                from gateway.sse_client import get_or_connect
+                # Re-use persistent SSE connection for this server
+                server_name = tool_name.split("__")[0]
+                sse = await get_or_connect(server_url, server_name, upstream_key)
+                result = await sse.call(
+                    "tools/call",
+                    forward_body.get("params", {}),
+                    id_=rpc_id
+                )
+                await _log(db, "tools/call", client.name, tool_name, 200)
+                return JSONResponse(result)
+            except asyncio.TimeoutError:
+                await _log(db, "tools/call", client.name, tool_name, 504, "SSE timeout")
+                return JSONResponse(rpc_error(rpc_id, -32000, "SSE upstream timed out"), status_code=504)
+            except Exception as e:
+                logger.error(f"SSE upstream error for {tool_name}: {e}")
+                await _log(db, "tools/call", client.name, tool_name, 502, str(e))
+                return JSONResponse(rpc_error(rpc_id, -32000, f"SSE upstream error: {e}"), status_code=502)
+
+        # ── HTTP / streamable-HTTP transport ─────────────────────
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -160,18 +182,10 @@ async def mcp_endpoint(
         if upstream_key:
             headers["Authorization"] = f"Bearer {upstream_key}"
 
-        # Attach session ID for FastMCP servers (no-op for plain JSON servers)
+        # Attach session ID for FastMCP streamable-HTTP servers
         sid = await _get_session_id(server_url, upstream_key)
         if sid:
             headers["Mcp-Session-Id"] = sid
-
-        # Strip our prefix from the tool name before forwarding
-        # upstream expects its own bare name (e.g. "add" not "myserver__add")
-        forward_body = dict(body)
-        if "params" in forward_body and "name" in forward_body["params"]:
-            raw_name = tool_name.split("__", 1)[1] if "__" in tool_name else tool_name
-            forward_body["params"] = dict(forward_body["params"])
-            forward_body["params"]["name"] = raw_name
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as http_client:
@@ -263,6 +277,9 @@ async def mcp_endpoint(
     if method == "tools/call":
         params    = body.get("params", {})
         tool_name = params.get("name", "")
+
+        print(f"Tool call: {tool_name} by {client.name}")
+        print(f"Allowed tools for {client.name}: {allowed_tools}")
 
         if tool_name not in allowed_tools:
             await _log(db, "tools/call", client.name, tool_name, 403, "Access denied")

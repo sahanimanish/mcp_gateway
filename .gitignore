@@ -1,0 +1,17 @@
+./__pycache__/
+__pycache__/
+**/*.pyc
+**/__pycache__/
+cpython-*.pyc
+*cpython-*.pyo
+*.pyc
+*.pyo
+# Ignore virtual environment directories
+venv/
+env/
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+# Ignore data files
+mcp-gateway/
+# Ignore log files
+*.log

@@ -79,8 +79,10 @@ async function loadAll() {
     }
     
     renderAll();
+    updateGatewayStatus();
   } catch(e) {
     showToast('Backend error: ' + e.message);
+    updateGatewayStatus();
   }
 }
 
@@ -121,6 +123,14 @@ function showPage(name) {
   if (meta.action) { btn.textContent = meta.action; btn.style.display = ''; }
   else btn.style.display = 'none';
   renderAll();
+}
+
+function updateGatewayStatus() {
+  const txt = document.getElementById('footer-status');
+  if (!txt) return;
+  
+  const toolCount = state.servers.reduce((sum, s) => sum + (s.tools ? s.tools.length : 0), 0);
+  txt.textContent = `v1.0.0 • ${toolCount} tools registered`;
 }
 
 function topbarAction() {

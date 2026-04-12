@@ -49,11 +49,14 @@ async def handle(request: Request):
         tool = body.get("params", {}).get("name", "")
         arguments = body.get("params", {}).get("arguments", {})
 
-        if tool.endswith("__echo"):
+        print(f"Received tool call: {tool} with arguments {arguments}")
+        print(f"Available tools: {[t['name'] for t in TOOLS]}")
+
+        if tool.endswith("echo"):
             content = arguments.get("message", "(no message)")
-        elif tool.endswith("__ping"):
+        elif tool.endswith("ping"):
             content = "pong"
-        elif tool.endswith("__list_items"):
+        elif tool.endswith("list_items"):
             content = ["item_1", "item_2", "item_3"]
         elif tool.endswith("__get_time"):
             from datetime import datetime, timezone
