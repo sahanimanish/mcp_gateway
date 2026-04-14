@@ -22,8 +22,26 @@ class ResourceOut(BaseModel):
     id:          str
     uri:         str
     name:        str
+    title:       str
     description: str
     mime_type:   str
+    size:        Optional[int] = None
+    icons:       List[dict] = []
+    annotations: dict = {}
+
+    class Config:
+        from_attributes = True
+
+
+class ResourceTemplateOut(BaseModel):
+    id:           str
+    uri_template: str
+    name:         str
+    title:        str
+    description:  str
+    mime_type:    str
+    icons:        List[dict] = []
+    annotations:  dict = {}
 
     class Config:
         from_attributes = True
@@ -34,8 +52,10 @@ class ResourceOut(BaseModel):
 class PromptOut(BaseModel):
     id:          str
     name:        str
+    title:       str
     description: str
     arguments:   list
+    icons:       List[dict] = []
 
     class Config:
         from_attributes = True
@@ -68,6 +88,7 @@ class ServerOut(BaseModel):
     last_seen:        Optional[datetime]
     tools:            List[ToolOut]     = []
     resources:        List[ResourceOut] = []
+    resource_templates: List[ResourceTemplateOut] = []
     prompts:          List[PromptOut]   = []
 
     class Config:
@@ -82,9 +103,11 @@ class DiscoveryPreview(BaseModel):
     capabilities:     dict
     tool_count:       int
     resource_count:   int
+    resource_template_count: int
     prompt_count:     int
     tools:     List[dict] = []
     resources: List[dict] = []
+    resource_templates: List[dict] = []
     prompts:   List[dict] = []
 
 

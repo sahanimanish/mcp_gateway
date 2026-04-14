@@ -106,15 +106,32 @@ class DiscoveredTool:
 class DiscoveredResource:
     uri:         str
     name:        str = ""
+    title:       str = ""
     description: str = ""
     mime_type:   str = ""
+    size:        int | None = None
+    icons:       list = field(default_factory=list)
+    annotations: dict = field(default_factory=dict)
+
+
+@dataclass
+class DiscoveredResourceTemplate:
+    uri_template: str
+    name:         str = ""
+    title:        str = ""
+    description:  str = ""
+    mime_type:    str = ""
+    icons:        list = field(default_factory=list)
+    annotations:  dict = field(default_factory=dict)
 
 
 @dataclass
 class DiscoveredPrompt:
     name:        str
+    title:       str = ""
     description: str = ""
     arguments:   list = field(default_factory=list)
+    icons:       list = field(default_factory=list)
 
 
 @dataclass
@@ -127,6 +144,7 @@ class DiscoveryResult:
     capabilities:     dict = field(default_factory=dict)
     tools:            list[DiscoveredTool]     = field(default_factory=list)
     resources:        list[DiscoveredResource] = field(default_factory=list)
+    resource_templates: list[DiscoveredResourceTemplate] = field(default_factory=list)
     prompts:          list[DiscoveredPrompt]   = field(default_factory=list)
 
 
@@ -242,7 +260,8 @@ async def _discover_http(server_url: str, server_name: str, upstream_key: str = 
         # Steps 2–4
         result.tools     = await _fetch_tools(server_name, rpc, 2)
         result.resources = await _fetch_resources(server_name, rpc, 3)
-        result.prompts   = await _fetch_prompts(server_name, rpc, 4)
+        result.resource_templates = await _fetch_resource_templates(server_name, rpc, 4)
+        result.prompts   = await _fetch_prompts(server_name, rpc, 5)
 
     return result
 
@@ -288,7 +307,8 @@ async def _discover_sse(server_url: str, server_name: str, upstream_key: str = "
 
         result.tools     = await _fetch_tools(server_name, rpc, 2)
         result.resources = await _fetch_resources(server_name, rpc, 3)
-        result.prompts   = await _fetch_prompts(server_name, rpc, 4)
+        result.resource_templates = await _fetch_resource_templates(server_name, rpc, 4)
+        result.prompts   = await _fetch_prompts(server_name, rpc, 5)
 
     except Exception as e:
         result.success = False
@@ -333,13 +353,40 @@ async def _fetch_resources(server_name: str, rpc, id_: int) -> list[DiscoveredRe
             resources.append(DiscoveredResource(
                 uri         = r.get("uri", ""),
                 name        = r.get("name", ""),
+                title       = r.get("title", ""),
                 description = r.get("description", ""),
                 mime_type   = r.get("mimeType", ""),
+                size        = r.get("size"),
+                icons       = r.get("icons", []) or [],
+                annotations = r.get("annotations", {}) or {},
             ))
         logger.info(f"[{server_name}] discovered {len(resources)} resources")
         return resources
     except Exception as e:
         logger.debug(f"[{server_name}] resources/list not supported: {e}")
+        return []
+
+
+async def _fetch_resource_templates(server_name: str, rpc, id_: int) -> list[DiscoveredResourceTemplate]:
+    try:
+        data = await rpc("resources/templates/list", id_)
+        if "error" in data:
+            return []
+        templates = []
+        for t in data.get("result", {}).get("resourceTemplates", []):
+            templates.append(DiscoveredResourceTemplate(
+                uri_template = t.get("uriTemplate", ""),
+                name         = t.get("name", ""),
+                title        = t.get("title", ""),
+                description  = t.get("description", ""),
+                mime_type    = t.get("mimeType", ""),
+                icons        = t.get("icons", []) or [],
+                annotations  = t.get("annotations", {}) or {},
+            ))
+        logger.info(f"[{server_name}] discovered {len(templates)} resource templates")
+        return templates
+    except Exception as e:
+        logger.debug(f"[{server_name}] resources/templates/list not supported: {e}")
         return []
 
 
@@ -352,8 +399,10 @@ async def _fetch_prompts(server_name: str, rpc, id_: int) -> list[DiscoveredProm
         for p in data.get("result", {}).get("prompts", []):
             prompts.append(DiscoveredPrompt(
                 name        = p.get("name", ""),
+                title       = p.get("title", ""),
                 description = p.get("description", ""),
                 arguments   = p.get("arguments", []),
+                icons       = p.get("icons", []) or [],
             ))
         logger.info(f"[{server_name}] discovered {len(prompts)} prompts")
         return prompts
@@ -365,15 +414,16 @@ async def _fetch_prompts(server_name: str, rpc, id_: int) -> list[DiscoveredProm
 async def save_discovery(db, server, result: DiscoveryResult):
     """
     Persist a DiscoveryResult into the DB and update in-memory registry.
-    Clears existing tools/resources/prompts for this server first.
+    Clears existing tools/resources/templates/prompts for this server first.
     """
     from sqlalchemy import delete
-    from gateway.database import MCPTool, MCPResource, MCPPrompt, new_id
+    from gateway.database import MCPTool, MCPResource, MCPResourceTemplate, MCPPrompt, new_id
     from datetime import datetime, timezone
 
     # clear old data
     await db.execute(delete(MCPTool).where(MCPTool.server_id == server.id))
     await db.execute(delete(MCPResource).where(MCPResource.server_id == server.id))
+    await db.execute(delete(MCPResourceTemplate).where(MCPResourceTemplate.server_id == server.id))
     await db.execute(delete(MCPPrompt).where(MCPPrompt.server_id == server.id))
     unregister_server(server.name)
 
@@ -403,8 +453,25 @@ async def save_discovery(db, server, result: DiscoveryResult):
             server_id   = server.id,
             uri         = r.uri,
             name        = r.name,
+            title       = r.title,
             description = r.description,
             mime_type   = r.mime_type,
+            size        = r.size,
+            icons       = r.icons,
+            annotations = r.annotations,
+        ))
+
+    for t in result.resource_templates:
+        db.add(MCPResourceTemplate(
+            id           = new_id(),
+            server_id    = server.id,
+            uri_template = t.uri_template,
+            name         = t.name,
+            title        = t.title,
+            description  = t.description,
+            mime_type    = t.mime_type,
+            icons        = t.icons,
+            annotations  = t.annotations,
         ))
 
     # persist prompts
@@ -413,12 +480,15 @@ async def save_discovery(db, server, result: DiscoveryResult):
             id          = new_id(),
             server_id   = server.id,
             name        = p.name,
+            title       = p.title,
             description = p.description,
             arguments   = p.arguments,
+            icons       = p.icons,
         ))
 
     await db.commit()
     logger.info(
         f"[{server.name}] saved ({result.transport}): {len(result.tools)} tools, "
-        f"{len(result.resources)} resources, {len(result.prompts)} prompts"
+        f"{len(result.resources)} resources, {len(result.resource_templates)} templates, "
+        f"{len(result.prompts)} prompts"
     )

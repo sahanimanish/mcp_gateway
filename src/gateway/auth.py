@@ -11,7 +11,7 @@ async def get_client_by_key(
 ):
     """
     Validates X-Api-Key header.
-    Returns (client, allowed_tools_set).
+    Returns (client, allowed_tools_set, allowed_server_ids_set).
     Raises 401 if key missing/invalid or client inactive.
     """
     if not x_api_key:
@@ -31,9 +31,11 @@ async def get_client_by_key(
     perms = await db.execute(
         select(Permission).where(Permission.client_id == client.id)
     )
-    allowed_tools = {p.tool_name for p in perms.scalars().all()}
+    permission_rows = perms.scalars().all()
+    allowed_tools = {p.tool_name for p in permission_rows}
+    allowed_server_ids = {p.server_id for p in permission_rows}
 
-    return client, allowed_tools
+    return client, allowed_tools, allowed_server_ids
 
 
 async def require_admin(x_admin_key: Optional[str] = Header(None)):

@@ -5,9 +5,10 @@ from sqlalchemy.orm import selectinload
 from typing import List
 
 from gateway.database import (
-    get_db, MCPServer, MCPTool, MCPResource, MCPPrompt,
+    get_db, MCPServer, MCPTool, MCPResource, MCPResourceTemplate, MCPPrompt,
     Client, Permission, ActivityLog, new_id
 )
+from gateway.auth import require_admin
 from gateway.schemas import (
     ServerCreate, ServerUpdate, ServerOut, DiscoveryPreview,
     ClientCreate, ClientUpdate, ClientOut,
@@ -16,7 +17,7 @@ from gateway.schemas import (
 )
 from gateway import registry as reg
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ def _server_load_opts():
     return (
         selectinload(MCPServer.tools),
         selectinload(MCPServer.resources),
+        selectinload(MCPServer.resource_templates),
         selectinload(MCPServer.prompts),
     )
 
@@ -82,10 +84,29 @@ async def preview_server(body: ServerCreate):
         capabilities     = result.capabilities,
         tool_count       = len(result.tools),
         resource_count   = len(result.resources),
+        resource_template_count = len(result.resource_templates),
         prompt_count     = len(result.prompts),
         tools     = [{"name": t.raw_name, "description": t.description} for t in result.tools],
-        resources = [{"uri": r.uri, "name": r.name, "mimeType": r.mime_type} for r in result.resources],
-        prompts   = [{"name": p.name, "description": p.description} for p in result.prompts],
+        resources = [{
+            "uri": r.uri,
+            "name": r.name,
+            "title": r.title,
+            "description": r.description,
+            "mimeType": r.mime_type,
+        } for r in result.resources],
+        resource_templates = [{
+            "uriTemplate": t.uri_template,
+            "name": t.name,
+            "title": t.title,
+            "description": t.description,
+            "mimeType": t.mime_type,
+        } for t in result.resource_templates],
+        prompts   = [{
+            "name": p.name,
+            "title": p.title,
+            "description": p.description,
+            "arguments": p.arguments,
+        } for p in result.prompts],
     )
 
 
@@ -178,6 +199,7 @@ async def delete_server(server_id: str, db: AsyncSession = Depends(get_db)):
     await db.execute(delete(Permission).where(Permission.server_id == server_id))
     await db.execute(delete(MCPTool).where(MCPTool.server_id == server_id))
     await db.execute(delete(MCPResource).where(MCPResource.server_id == server_id))
+    await db.execute(delete(MCPResourceTemplate).where(MCPResourceTemplate.server_id == server_id))
     await db.execute(delete(MCPPrompt).where(MCPPrompt.server_id == server_id))
     await db.delete(server)
     await db.commit()
@@ -361,8 +383,26 @@ async def export_config(db: AsyncSession = Depends(get_db)):
                 "protocol_version": s.protocol_version,
                 "server_info": s.server_info,
                 "tools":     [{"name": t.raw_name, "description": t.description} for t in s.tools],
-                "resources": [{"uri": r.uri, "name": r.name} for r in s.resources],
-                "prompts":   [{"name": p.name, "description": p.description} for p in s.prompts],
+                "resources": [{
+                    "uri": r.uri,
+                    "name": r.name,
+                    "title": r.title,
+                    "description": r.description,
+                    "mimeType": r.mime_type,
+                } for r in s.resources],
+                "resource_templates": [{
+                    "uriTemplate": t.uri_template,
+                    "name": t.name,
+                    "title": t.title,
+                    "description": t.description,
+                    "mimeType": t.mime_type,
+                } for t in s.resource_templates],
+                "prompts":   [{
+                    "name": p.name,
+                    "title": p.title,
+                    "description": p.description,
+                    "arguments": p.arguments,
+                } for p in s.prompts],
             }
             for s in servers
         ],

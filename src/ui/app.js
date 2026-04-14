@@ -48,6 +48,7 @@ async function loadAll() {
       desc:      s.description,
       tools:     (s.tools     || []).map(t => t.name),
       resources: (s.resources || []),
+      resource_templates: (s.resource_templates || []),
       prompts:   (s.prompts   || []),
     }));
     state.clients = clients.map(c => ({
@@ -130,7 +131,9 @@ function updateGatewayStatus() {
   if (!txt) return;
   
   const toolCount = state.servers.reduce((sum, s) => sum + (s.tools ? s.tools.length : 0), 0);
-  txt.textContent = `v1.0.0 • ${toolCount} tools registered`;
+  const resourceCount = state.servers.reduce((sum, s) => sum + (s.resources ? s.resources.length : 0), 0);
+  const promptCount = state.servers.reduce((sum, s) => sum + (s.prompts ? s.prompts.length : 0), 0);
+  txt.textContent = `v1.0.0 • ${toolCount} tools • ${resourceCount} resources • ${promptCount} prompts`;
 }
 
 function topbarAction() {
@@ -199,6 +202,7 @@ function renderServersTable() {
       const caps = s.capabilities || {};
       const toolCount = (s.tools||[]).length;
       const resCount  = (s.resources||[]).length;
+      const tplCount  = (s.resource_templates||[]).length;
       const prmCount  = (s.prompts||[]).length;
       return `<tr>
         <td class="primary"><span style="font-family:var(--mono)">${s.name}</span></td>
@@ -210,6 +214,7 @@ function renderServersTable() {
         <td>
           <span class="badge badge-blue" style="margin-right:4px" title="Tools">⚙ ${toolCount}</span>
           <span class="badge badge-amber" style="margin-right:4px" title="Resources">◎ ${resCount}</span>
+          <span class="badge badge-blue" style="margin-right:4px" title="Resource templates"># ${tplCount}</span>
           <span class="badge badge-gray" title="Prompts">✦ ${prmCount}</span>
         </td>
         <td>${serverStatusBadge(s)}</td>
@@ -448,6 +453,7 @@ async function previewServer() {
       // populate tabs
       document.getElementById('tc').textContent = preview.tool_count;
       document.getElementById('rc').textContent = preview.resource_count;
+      document.getElementById('rtc').textContent = preview.resource_template_count;
       document.getElementById('pc').textContent = preview.prompt_count;
       document.getElementById('srv-preview-tabs').style.display = '';
 
@@ -460,15 +466,25 @@ async function previewServer() {
 
       document.getElementById('srv-tab-resources').innerHTML = preview.resources.length
         ? preview.resources.map(r => `<div class="preview-item">
-            <div class="preview-item-name">${r.name||r.uri}</div>
-            <div class="preview-item-desc">${r.uri}</div>
+            <div class="preview-item-name">${r.title || r.name || r.uri}</div>
+            <div class="preview-item-desc">${r.description || 'Resource exposed by upstream server'}</div>
+            <div class="preview-item-meta">${r.uri}</div>
           </div>`).join('')
         : '<div style="padding:12px;color:var(--text3);font-size:12px">No resources reported</div>';
 
+      document.getElementById('srv-tab-templates').innerHTML = preview.resource_templates.length
+        ? preview.resource_templates.map(t => `<div class="preview-item">
+            <div class="preview-item-name">${t.title || t.name || t.uriTemplate}</div>
+            <div class="preview-item-desc">${t.description || 'Template for generating resource URIs'}</div>
+            <div class="preview-item-meta">${t.uriTemplate}</div>
+          </div>`).join('')
+        : '<div style="padding:12px;color:var(--text3);font-size:12px">No resource templates reported</div>';
+
       document.getElementById('srv-tab-prompts').innerHTML = preview.prompts.length
         ? preview.prompts.map(p => `<div class="preview-item">
-            <div class="preview-item-name">${p.name}</div>
+            <div class="preview-item-name">${p.title || p.name}</div>
             <div class="preview-item-desc">${p.description||'—'}</div>
+            <div class="preview-item-meta">${p.arguments?.length ? `${p.arguments.length} argument(s)` : 'No arguments'}</div>
           </div>`).join('')
         : '<div style="padding:12px;color:var(--text3);font-size:12px">No prompts reported</div>';
 

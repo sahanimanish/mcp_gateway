@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.database import get_db, ActivityLog, MCPTool
+from gateway.database import get_db, ActivityLog, MCPServer, MCPTool, MCPResource, MCPResourceTemplate, MCPPrompt
 from gateway.auth import get_client_by_key
 from gateway import registry
 
@@ -78,6 +78,16 @@ def _sse_event(data: dict) -> str:
     return f"event: message\r\ndata: {json.dumps(data)}\r\n\r\n"
 
 
+def _gateway_prompt_name(server_name: str, prompt_name: str) -> str:
+    return f"{server_name}__{prompt_name}"
+
+
+def _strip_gateway_prompt_name(prompt_name: str) -> tuple[str | None, str]:
+    if "__" not in prompt_name:
+        return None, prompt_name
+    return prompt_name.split("__", 1)
+
+
 async def _get_session_id(server_url: str, upstream_key: str) -> Optional[str]:
     """Initialize a streamable-HTTP session and return its session ID."""
     if server_url in _session_cache:
@@ -111,6 +121,77 @@ async def _get_session_id(server_url: str, upstream_key: str) -> Optional[str]:
         return None
 
 
+def _parse_upstream_response(resp: httpx.Response) -> dict:
+    content_type = resp.headers.get("content-type", "")
+    if "text/event-stream" in content_type:
+        for message in _parse_sse(resp.text):
+            if "result" in message or "error" in message:
+                return message
+        return {}
+    try:
+        return resp.json()
+    except json.JSONDecodeError:
+        return {}
+
+
+async def _send_upstream_rpc_http(
+    server_url: str,
+    upstream_key: str,
+    body: dict,
+) -> dict:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if upstream_key:
+        headers["Authorization"] = f"Bearer {upstream_key}"
+
+    sid = await _get_session_id(server_url, upstream_key)
+    if sid:
+        headers["Mcp-Session-Id"] = sid
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(server_url.rstrip("/") + "/mcp", json=body, headers=headers)
+        response.raise_for_status()
+        return _parse_upstream_response(response)
+
+
+async def _send_upstream_rpc_sse(
+    server_url: str,
+    server_name: str,
+    upstream_key: str,
+    method: str,
+    params: dict,
+) -> dict:
+    from gateway.sse_client import get_or_connect
+
+    sse_client = await get_or_connect(server_url, server_name, upstream_key)
+    return await sse_client.call(method, params, id_=None)
+
+
+async def _send_upstream_rpc(
+    server_url: str,
+    server_name: str,
+    upstream_key: str,
+    transport: str,
+    rpc_id,
+    method: str,
+    params: dict,
+) -> dict:
+    if transport == "sse":
+        response = await _send_upstream_rpc_sse(server_url, server_name, upstream_key, method, params)
+    else:
+        response = await _send_upstream_rpc_http(
+            server_url,
+            upstream_key,
+            {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params},
+        )
+
+    if "id" in response:
+        response["id"] = rpc_id
+    return response
+
+
 # ── Main endpoint ────────────────────────────────────────────────
 
 @router.post("/mcp")
@@ -119,14 +200,10 @@ async def mcp_endpoint(
     auth=Depends(get_client_by_key),
     db: AsyncSession = Depends(get_db),
 ):
-    client, allowed_tools = auth
+    client, allowed_tools, allowed_server_ids = auth
     body = await request.json()
     method = body.get("method", "")
     rpc_id = body.get("id")
-
-    # Detect whether the downstream client supports elicitation
-    client_caps = body.get("params", {}).get("capabilities", {}) if method == "initialize" else {}
-    client_supports_elicitation = "elicitation" in client_caps
 
     # ── initialize ──────────────────────────────────────────────
     if method == "initialize":
@@ -135,6 +212,8 @@ async def mcp_endpoint(
             "protocolVersion": "2024-11-05",
             "capabilities": {
                 "tools": {},
+                "resources": {},
+                "prompts": {},
                 "elicitation": {},   # advertise elicitation support
             },
             "serverInfo": {"name": "mcp-gateway", "version": "1.0.0"},
@@ -159,6 +238,127 @@ async def mcp_endpoint(
         await _log(db, "tools/list", client.name, "—", 200,
                    f"{len(tools_out)} tools visible")
         return JSONResponse(rpc_ok(rpc_id, {"tools": tools_out}))
+
+    if method == "prompts/list":
+        result = await db.execute(
+            select(MCPPrompt, MCPServer)
+            .join(MCPServer, MCPPrompt.server_id == MCPServer.id)
+            .where(MCPPrompt.server_id.in_(allowed_server_ids))
+            .order_by(MCPServer.name, MCPPrompt.name)
+        )
+        prompts_out = []
+        for prompt, server in result.all():
+            prompts_out.append({
+                "name": _gateway_prompt_name(server.name, prompt.name),
+                "title": prompt.title or prompt.name,
+                "description": prompt.description,
+                "arguments": prompt.arguments or [],
+                "icons": prompt.icons or [],
+            })
+
+        await _log(db, "prompts/list", client.name, "—", 200, f"{len(prompts_out)} prompts visible")
+        return JSONResponse(rpc_ok(rpc_id, {"prompts": prompts_out}))
+
+    if method == "prompts/get":
+        params = body.get("params", {})
+        prompt_name = params.get("name", "")
+        server_name, raw_prompt_name = _strip_gateway_prompt_name(prompt_name)
+        if not server_name:
+            await _log(db, "prompts/get", client.name, prompt_name, 400, "Prompt must be namespaced as server__prompt")
+            return JSONResponse(rpc_error(rpc_id, -32602, "Prompt name must be namespaced as server__prompt"), status_code=400)
+
+        prompt_row = await db.execute(
+            select(MCPPrompt, MCPServer)
+            .join(MCPServer, MCPPrompt.server_id == MCPServer.id)
+            .where(
+                MCPServer.name == server_name,
+                MCPPrompt.name == raw_prompt_name,
+                MCPPrompt.server_id.in_(allowed_server_ids),
+            )
+        )
+        row = prompt_row.first()
+        if not row:
+            await _log(db, "prompts/get", client.name, prompt_name, 404, "Prompt not found")
+            return JSONResponse(rpc_error(rpc_id, -32601, f"Prompt not found: '{prompt_name}'"), status_code=404)
+
+        prompt, server = row
+        response = await _send_upstream_rpc(
+            server.url,
+            server.name,
+            server.upstream_key or "",
+            (server.server_info or {}).get("_transport", "http"),
+            rpc_id,
+            "prompts/get",
+            {"name": prompt.name, "arguments": params.get("arguments", {})},
+        )
+        await _log(db, "prompts/get", client.name, prompt_name, 200 if "error" not in response else 502)
+        return JSONResponse(response, status_code=200 if "error" not in response else 502)
+
+    if method == "resources/list":
+        result = await db.execute(
+            select(MCPResource)
+            .where(MCPResource.server_id.in_(allowed_server_ids))
+            .order_by(MCPResource.name, MCPResource.uri)
+        )
+        resources_out = [{
+            "uri": resource.uri,
+            "name": resource.name,
+            "title": resource.title,
+            "description": resource.description,
+            "mimeType": resource.mime_type,
+            "size": resource.size,
+            "icons": resource.icons or [],
+            "annotations": resource.annotations or {},
+        } for resource in result.scalars().all()]
+        await _log(db, "resources/list", client.name, "—", 200, f"{len(resources_out)} resources visible")
+        return JSONResponse(rpc_ok(rpc_id, {"resources": resources_out}))
+
+    if method == "resources/templates/list":
+        result = await db.execute(
+            select(MCPResourceTemplate)
+            .where(MCPResourceTemplate.server_id.in_(allowed_server_ids))
+            .order_by(MCPResourceTemplate.name, MCPResourceTemplate.uri_template)
+        )
+        templates_out = [{
+            "uriTemplate": template.uri_template,
+            "name": template.name,
+            "title": template.title,
+            "description": template.description,
+            "mimeType": template.mime_type,
+            "icons": template.icons or [],
+            "annotations": template.annotations or {},
+        } for template in result.scalars().all()]
+        await _log(db, "resources/templates/list", client.name, "—", 200, f"{len(templates_out)} templates visible")
+        return JSONResponse(rpc_ok(rpc_id, {"resourceTemplates": templates_out}))
+
+    if method == "resources/read":
+        params = body.get("params", {})
+        uri = params.get("uri", "")
+        result = await db.execute(
+            select(MCPResource, MCPServer)
+            .join(MCPServer, MCPResource.server_id == MCPServer.id)
+            .where(MCPResource.uri == uri, MCPResource.server_id.in_(allowed_server_ids))
+        )
+        matches = result.all()
+        if not matches:
+            await _log(db, "resources/read", client.name, uri, 404, "Resource not found")
+            return JSONResponse(rpc_error(rpc_id, -32601, f"Resource not found: '{uri}'"), status_code=404)
+        if len(matches) > 1:
+            await _log(db, "resources/read", client.name, uri, 409, "Ambiguous resource URI")
+            return JSONResponse(rpc_error(rpc_id, -32602, f"Ambiguous resource URI across multiple servers: '{uri}'"), status_code=409)
+
+        resource, server = matches[0]
+        response = await _send_upstream_rpc(
+            server.url,
+            server.name,
+            server.upstream_key or "",
+            (server.server_info or {}).get("_transport", "http"),
+            rpc_id,
+            "resources/read",
+            {"uri": resource.uri},
+        )
+        await _log(db, "resources/read", client.name, uri, 200 if "error" not in response else 502)
+        return JSONResponse(response, status_code=200 if "error" not in response else 502)
 
     # ── tools/call ──────────────────────────────────────────────
     if method == "tools/call":
