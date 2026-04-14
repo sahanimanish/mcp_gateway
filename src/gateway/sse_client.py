@@ -35,13 +35,20 @@ class SSEServerClient:
         self.server_name  = server_name
         self.upstream_key = upstream_key
 
-        self._messages_url: Optional[str] = None   # e.g. /messages/?session_id=xxx
+        self._messages_url: Optional[str] = None
         self._pending: dict[int | str, asyncio.Future] = {}
         self._sse_task: Optional[asyncio.Task] = None
         self._ready    = asyncio.Event()
-        self._http     = httpx.AsyncClient(timeout=30.0)
+        # Separate clients: one long-lived for the SSE stream, one for POST requests
+        self._sse_http  = httpx.AsyncClient(timeout=None)   # no timeout for SSE stream
+        self._post_http = httpx.AsyncClient(                 # connection pool for POSTs
+            timeout=30.0,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20)
+        )
         self._lock     = asyncio.Lock()
-        self._next_id  = 10  # start at 10 to avoid clash with discovery ids
+        self._next_id  = 10
+        # Elicitation handler — set by proxy when making a tool call
+        self._elicitation_handler = None
 
     # ── Lifecycle ────────────────────────────────────────────────
 
@@ -51,9 +58,10 @@ class SSEServerClient:
         await asyncio.wait_for(self._ready.wait(), timeout=10.0)
 
         # MCP protocol requires initialize before any tool calls
+        # Declare elicitation capability so server knows we can handle it
         await self.call("initialize", {
             "protocolVersion": "2024-11-05",
-            "capabilities": {},
+            "capabilities": {"elicitation": {}},
             "clientInfo": {"name": "mcp-gateway", "version": "1.0.0"}
         }, id_=0)
 
@@ -64,7 +72,8 @@ class SSEServerClient:
                 await self._sse_task
             except asyncio.CancelledError:
                 pass
-        await self._http.aclose()
+        await self._sse_http.aclose()
+        await self._post_http.aclose()
 
     # ── Internal SSE reader ──────────────────────────────────────
 
@@ -74,7 +83,7 @@ class SSEServerClient:
             headers["Authorization"] = f"Bearer {self.upstream_key}"
 
         try:
-            async with self._http.stream("GET", f"{self.server_url}/sse",
+            async with self._sse_http.stream("GET", f"{self.server_url}/sse",
                                          headers=headers) as resp:
                 resp.raise_for_status()
                 event_type = None
@@ -92,10 +101,18 @@ class SSEServerClient:
                             self._ready.set()
                             logger.info(f"[{self.server_name}] SSE session URL: {data}")
 
-                        elif event_type == "message":
+                        if event_type == "message":
                             try:
                                 msg = json.loads(data)
                                 msg_id = msg.get("id")
+
+                                # Server is requesting user input mid-call
+                                if msg.get("method") == "elicitation/create":
+                                    asyncio.create_task(
+                                        self._handle_elicitation(msg)
+                                    )
+                                    continue
+
                                 fut = self._pending.pop(msg_id, None)
                                 if fut and not fut.done():
                                     fut.set_result(msg)
@@ -116,7 +133,61 @@ class SSEServerClient:
                     fut.set_exception(e)
             self._pending.clear()
 
+    async def _handle_elicitation(self, msg: dict):
+        """
+        Handle an elicitation/create request from the server.
+        Calls the registered handler (set by proxy) and sends the response back.
+        """
+        elicit_id = msg.get("id")
+        params    = msg.get("params", {})
+
+        handler = getattr(self, "_elicitation_handler", None)
+        if handler:
+            try:
+                user_response = await handler(msg)
+            except Exception as e:
+                logger.error(f"[{self.server_name}] elicitation handler error: {e}")
+                user_response = {"action": "cancel"}
+        else:
+            logger.warning(f"[{self.server_name}] no elicitation handler — auto-cancelling")
+            user_response = {"action": "cancel"}
+
+        # Send response back to server via POST to messages endpoint
+        if self._messages_url:
+            msg_url = (self.server_url + self._messages_url
+                      if self._messages_url.startswith("/")
+                      else self._messages_url)
+            headers = {"Content-Type": "application/json"}
+            if self.upstream_key:
+                headers["Authorization"] = f"Bearer {self.upstream_key}"
+            await self._post_http.post(msg_url, json={
+                "jsonrpc": "2.0",
+                "id": elicit_id,
+                "result": user_response
+            }, headers=headers)
+            logger.info(f"[{self.server_name}] elicitation {elicit_id} responded: {user_response['action']}")
+
     # ── Public RPC call ──────────────────────────────────────────
+
+    async def call_raw_response(self, response_body: dict):
+        """
+        POST a raw JSON-RPC response back to the upstream server.
+        Used for elicitation responses: the server sent elicitation/create,
+        we forward the client's answer back.
+        """
+        if not self._ready.is_set():
+            raise RuntimeError("SSE client not connected")
+
+        if self._messages_url.startswith("/"):
+            msg_url = self.server_url + self._messages_url
+        else:
+            msg_url = self._messages_url
+
+        headers = {"Content-Type": "application/json"}
+        if self.upstream_key:
+            headers["Authorization"] = f"Bearer {self.upstream_key}"
+
+        await self._post_http.post(msg_url, json=response_body, headers=headers)
 
     async def call(self, method: str, params: dict, id_: Optional[int] = None) -> dict:
         """
@@ -149,7 +220,7 @@ class SSEServerClient:
         payload = {"jsonrpc": "2.0", "id": id_, "method": method, "params": params}
 
         try:
-            resp = await self._http.post(msg_url, json=payload, headers=headers)
+            resp = await self._post_http.post(msg_url, json=payload, headers=headers)
             if resp.status_code not in (200, 202):
                 self._pending.pop(id_, None)
                 if not fut.done():

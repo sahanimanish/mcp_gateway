@@ -110,6 +110,12 @@ async def create_server(body: ServerCreate, db: AsyncSession = Depends(get_db)):
     )).scalar_one_or_none()
     if existing:
         raise HTTPException(409, f"Server '{body.name}' already registered")
+    
+    existing = (await db.execute(
+        select(MCPServer).where(MCPServer.url == body.url.rstrip("/"))
+    )).scalar_one_or_none()
+    if existing:
+        raise HTTPException(409, f"Server '{body.url}' already registered")
 
     # Create server record first
     server = MCPServer(

@@ -21,7 +21,7 @@ class MCPServer(Base):
 
     id               = Column(String, primary_key=True, default=new_id)
     name             = Column(String, unique=True, nullable=False)
-    url              = Column(String, nullable=False)
+    url              = Column(String, nullable=False,unique=True)
     description      = Column(String, default="")
     upstream_key     = Column(String, default="")
     status           = Column(String, default="unknown")   # online | offline | unknown
