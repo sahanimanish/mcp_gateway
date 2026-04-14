@@ -5,13 +5,26 @@ from gateway.database import get_db, Client, Permission
 from typing import Optional
 
 
+def _normalize_permission_type(permission_type: str) -> str:
+    permission_type = (permission_type or "tool").strip().lower()
+    if permission_type == "tool":
+        return "tools"
+    if permission_type == "prompt":
+        return "prompts"
+    if permission_type == "resource":
+        return "resources"
+    if permission_type in ("resource_template", "template"):
+        return "resource_templates"
+    return permission_type
+
+
 async def get_client_by_key(
     x_api_key: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Validates X-Api-Key header.
-    Returns (client, allowed_tools_set, allowed_server_ids_set).
+    Returns (client, permissions_by_server, allowed_server_ids_set).
     Raises 401 if key missing/invalid or client inactive.
     """
     if not x_api_key:
@@ -27,15 +40,27 @@ async def get_client_by_key(
     if not client.is_active:
         raise HTTPException(status_code=403, detail="Client is deactivated")
 
-    # Load allowed tools
+    # Load allowed permissions
     perms = await db.execute(
         select(Permission).where(Permission.client_id == client.id)
     )
     permission_rows = perms.scalars().all()
-    allowed_tools = {p.tool_name for p in permission_rows}
+    permissions_by_server = {}
+    for permission in permission_rows:
+        permission_type = _normalize_permission_type(permission.permission_type)
+        permission_value = permission.permission_value or permission.tool_name
+        if permission.server_id not in permissions_by_server:
+            permissions_by_server[permission.server_id] = {
+                "tools": set(),
+                "prompts": set(),
+                "resources": set(),
+                "resource_templates": set(),
+            }
+        if permission_type in permissions_by_server[permission.server_id] and permission_value:
+            permissions_by_server[permission.server_id][permission_type].add(permission_value)
     allowed_server_ids = {p.server_id for p in permission_rows}
 
-    return client, allowed_tools, allowed_server_ids
+    return client, permissions_by_server, allowed_server_ids
 
 
 async def require_admin(x_admin_key: Optional[str] = Header(None)):

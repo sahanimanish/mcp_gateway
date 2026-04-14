@@ -16,6 +16,29 @@ const state = {
   pendingPerms: {}
 };
 
+const PERMISSION_TYPES = ['tools', 'prompts', 'resources', 'resource_templates'];
+
+function emptyPermBucket() {
+  return {
+    tools: new Set(),
+    prompts: new Set(),
+    resources: new Set(),
+    resource_templates: new Set(),
+  };
+}
+
+function normalizePermBucket(data = {}) {
+  const bucket = emptyPermBucket();
+  PERMISSION_TYPES.forEach(type => {
+    for (const value of (data[type] || [])) bucket[type].add(value);
+  });
+  return bucket;
+}
+
+function totalPermCount(serverPerms = {}) {
+  return PERMISSION_TYPES.reduce((sum, type) => sum + ((serverPerms[type] && serverPerms[type].size) || 0), 0);
+}
+
 // ── API helpers ─────────────────────────────────────────────────
 async function api(method, path, body) {
   const opts = { method, headers: headers() };
@@ -70,8 +93,8 @@ async function loadAll() {
       try {
         const data = await GET(`/admin/clients/${client.id}/permissions`);
         const perms = {};
-        for (const [sid, tools] of Object.entries(data.permissions || {})) {
-          perms[sid] = new Set(tools);
+        for (const [sid, serverPerms] of Object.entries(data.permissions || {})) {
+          perms[sid] = normalizePermBucket(serverPerms);
         }
         client.perms = perms;
       } catch(e) {
@@ -90,10 +113,9 @@ async function loadAll() {
 async function loadClientPerms(clientId) {
   try {
     const data = await GET(`/admin/clients/${clientId}/permissions`);
-    // convert { serverId: [tool,...] } → { serverId: Set }
     const perms = {};
-    for (const [sid, tools] of Object.entries(data.permissions || {})) {
-      perms[sid] = new Set(tools);
+    for (const [sid, serverPerms] of Object.entries(data.permissions || {})) {
+      perms[sid] = normalizePermBucket(serverPerms);
     }
     state.pendingPerms[clientId] = perms;
     return perms;
@@ -182,7 +204,7 @@ function renderDashClients() {
   el.innerHTML = `<table><thead><tr><th>Client</th><th>Servers</th><th>Tool permissions</th><th>Key</th></tr></thead><tbody>
     ${state.clients.map(c => {
       const srvCount = c.perms ? Object.keys(c.perms).length : 0;
-      const toolCount = c.perms ? Object.values(c.perms).reduce((a,s) => a+s.size,0) : 0;
+      const toolCount = c.perms ? Object.values(c.perms).reduce((a,s) => a + totalPermCount(s), 0) : 0;
       return `<tr>
         <td class="primary">${c.name}</td>
         <td><span class="badge badge-blue">${srvCount} server${srvCount!==1?'s':''}</span></td>
@@ -232,7 +254,7 @@ function renderClientsTable() {
   if (!state.clients.length) { el.innerHTML = '<div class="empty-state"><div class="empty-icon">◉</div>No clients yet — add your first client</div>'; return; }
   el.innerHTML = `<table><thead><tr><th>Name</th><th>Description</th><th>Permissions</th><th>API key</th><th></th></tr></thead><tbody>
     ${state.clients.map(c => {
-      const toolCount = c.perms ? Object.values(c.perms).reduce((a,s)=>a+s.size,0) : 0;
+      const toolCount = c.perms ? Object.values(c.perms).reduce((a,s)=>a + totalPermCount(s),0) : 0;
       const srvCount  = c.perms ? Object.keys(c.perms).length : 0;
       return `<tr>
         <td class="primary">${c.name}</td>
@@ -259,6 +281,31 @@ function renderPermClientSelect() {
   if (cur) sel.value = cur;
 }
 
+function serverPermissionEnabled(serverPerms) {
+  return !!serverPerms && totalPermCount(serverPerms) > 0;
+}
+
+function permissionItemsForServer(server, type) {
+  if (type === 'tools') return server.tools || [];
+  if (type === 'prompts') return (server.prompts || []).map(p => p.name);
+  if (type === 'resources') return (server.resources || []).map(r => r.uri);
+  if (type === 'resource_templates') return (server.resource_templates || []).map(t => t.uri_template);
+  return [];
+}
+
+function permissionLabel(value, type) {
+  if (type === 'tools') return value.split('__')[1] || value;
+  if (type === 'prompts') return value;
+  return value;
+}
+
+function permissionTitle(type) {
+  if (type === 'tools') return 'Tools';
+  if (type === 'prompts') return 'Prompts';
+  if (type === 'resources') return 'Resources';
+  return 'Templates';
+}
+
 async function renderPermMatrix() {
   const clientId = document.getElementById('perm-client-select').value;
   const wrap = document.getElementById('perm-matrix-wrap');
@@ -274,16 +321,19 @@ async function renderPermMatrix() {
   // Load from API
   await loadClientPerms(clientId);
 
-  const client = state.clients.find(c => c.id === clientId);
   wrap.innerHTML = '<div class="perm-matrix">' +
     state.servers.map(s => {
-      const hasServer = !!(state.pendingPerms[clientId] && state.pendingPerms[clientId][s.id]);
+      const serverPerms = state.pendingPerms[clientId] && state.pendingPerms[clientId][s.id];
+      const hasServer = serverPermissionEnabled(serverPerms);
       return `<div class="perm-server-row${hasServer?' open':''}" id="psr-${clientId}-${s.id}">
         <div class="perm-server-header" onclick="toggleServerRow('${clientId}','${s.id}')">
           <div class="perm-server-name">
             <span style="font-family:var(--mono);color:var(--accent)">${s.name}</span>
             <span style="color:var(--text3);font-size:12px">${s.desc||''}</span>
             <span class="badge badge-gray">${s.tools.length} tools</span>
+            <span class="badge badge-gray">${s.prompts.length} prompts</span>
+            <span class="badge badge-gray">${s.resources.length} resources</span>
+            <span class="badge badge-gray">${s.resource_templates.length} templates</span>
           </div>
           <div class="perm-server-access">
             <label class="toggle" onclick="event.stopPropagation()">
@@ -294,20 +344,26 @@ async function renderPermMatrix() {
           </div>
         </div>
         <div class="perm-tools-panel">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-family:var(--mono)">Select which tools this client can call:</div>
-          <div class="perm-tools-grid">
-            ${s.tools.map(t => {
-              const allowed = state.pendingPerms[clientId] && state.pendingPerms[clientId][s.id]?.has(t);
-              return `<div class="perm-tool-item${allowed?' allowed':''}" id="pt-${clientId}-${s.id}-${t.replace(/[^a-z0-9]/gi,'_')}" onclick="toggleTool('${clientId}','${s.id}','${t}')">
-                <div class="perm-tool-checkbox">${allowed?'✓':''}</div>
-                <div class="perm-tool-name">${t.split('__')[1]||t}</div>
-              </div>`;
-            }).join('')}
-          </div>
-          <div style="margin-top:10px;display:flex;gap:8px;">
-            <button class="btn btn-ghost btn-sm" onclick="selectAllTools('${clientId}','${s.id}')">Select all</button>
-            <button class="btn btn-ghost btn-sm" onclick="clearAllTools('${clientId}','${s.id}')">Clear all</button>
-          </div>
+          ${PERMISSION_TYPES.map(type => {
+            const items = permissionItemsForServer(s, type);
+            return `<div class="perm-category">
+              <div style="font-size:11px;color:var(--text3);margin:10px 0 8px;font-family:var(--mono)">${permissionTitle(type)}</div>
+              ${items.length ? `<div class="perm-tools-grid">
+                ${items.map(value => {
+                  const allowed = !!(serverPerms && serverPerms[type] && serverPerms[type].has(value));
+                  const safeId = value.replace(/[^a-z0-9]/gi,'_');
+                  return `<div class="perm-tool-item${allowed?' allowed':''}" id="pt-${type}-${clientId}-${s.id}-${safeId}" onclick="togglePermissionItem('${clientId}','${s.id}','${type}','${value.replace(/'/g, "\\'")}')">
+                    <div class="perm-tool-checkbox">${allowed?'✓':''}</div>
+                    <div class="perm-tool-name">${permissionLabel(value, type)}</div>
+                  </div>`;
+                }).join('')}
+              </div>` : `<div class="form-hint">No ${permissionTitle(type).toLowerCase()} discovered for this server.</div>`}
+              <div style="margin-top:10px;display:flex;gap:8px;">
+                <button class="btn btn-ghost btn-sm" onclick="selectAllForType('${clientId}','${s.id}','${type}')">Select all</button>
+                <button class="btn btn-ghost btn-sm" onclick="clearAllForType('${clientId}','${s.id}','${type}')">Clear all</button>
+              </div>
+            </div>`;
+          }).join('')}
         </div>
       </div>`;
     }).join('') + '</div>';
@@ -321,50 +377,56 @@ function toggleServerRow(cid, sid) {
 function toggleServerAccess(cid, sid, checked) {
   if (!state.pendingPerms[cid]) state.pendingPerms[cid] = {};
   if (checked) {
-    if (!state.pendingPerms[cid][sid]) state.pendingPerms[cid][sid] = new Set();
+    if (!state.pendingPerms[cid][sid]) state.pendingPerms[cid][sid] = emptyPermBucket();
     document.getElementById(`psr-${cid}-${sid}`).classList.add('open');
   } else {
     delete state.pendingPerms[cid][sid];
-    // uncheck all tools visually
     const server = state.servers.find(s=>s.id===sid);
-    server.tools.forEach(t => {
-      const el = document.getElementById(`pt-${cid}-${sid}-${t.replace(/[^a-z0-9]/gi,'_')}`);
-      if (el) { el.classList.remove('allowed'); el.querySelector('.perm-tool-checkbox').textContent=''; }
+    PERMISSION_TYPES.forEach(type => {
+      permissionItemsForServer(server, type).forEach(value => {
+        const el = document.getElementById(`pt-${type}-${cid}-${sid}-${value.replace(/[^a-z0-9]/gi,'_')}`);
+        if (el) { el.classList.remove('allowed'); el.querySelector('.perm-tool-checkbox').textContent=''; }
+      });
     });
   }
 }
 
-function toggleTool(cid, sid, tool) {
+function togglePermissionItem(cid, sid, type, value) {
   if (!state.pendingPerms[cid]) state.pendingPerms[cid] = {};
-  if (!state.pendingPerms[cid][sid]) state.pendingPerms[cid][sid] = new Set();
-  const set = state.pendingPerms[cid][sid];
-  const el = document.getElementById(`pt-${cid}-${sid}-${tool.replace(/[^a-z0-9]/gi,'_')}`);
-  if (set.has(tool)) { set.delete(tool); el.classList.remove('allowed'); el.querySelector('.perm-tool-checkbox').textContent=''; }
-  else { set.add(tool); el.classList.add('allowed'); el.querySelector('.perm-tool-checkbox').textContent='✓'; }
-  // ensure server toggle is on
+  if (!state.pendingPerms[cid][sid]) state.pendingPerms[cid][sid] = emptyPermBucket();
+  const set = state.pendingPerms[cid][sid][type];
+  const el = document.getElementById(`pt-${type}-${cid}-${sid}-${value.replace(/[^a-z0-9]/gi,'_')}`);
+  if (set.has(value)) { set.delete(value); el.classList.remove('allowed'); el.querySelector('.perm-tool-checkbox').textContent=''; }
+  else { set.add(value); el.classList.add('allowed'); el.querySelector('.perm-tool-checkbox').textContent='✓'; }
   const toggle = document.querySelector(`#psr-${cid}-${sid} input[type=checkbox]`);
-  if (toggle && set.size > 0) toggle.checked = true;
+  if (toggle) toggle.checked = serverPermissionEnabled(state.pendingPerms[cid][sid]);
 }
 
-function selectAllTools(cid, sid) {
+function selectAllForType(cid, sid, type) {
   const server = state.servers.find(s=>s.id===sid);
   if (!state.pendingPerms[cid]) state.pendingPerms[cid] = {};
-  state.pendingPerms[cid][sid] = new Set(server.tools);
-  server.tools.forEach(t => {
-    const el = document.getElementById(`pt-${cid}-${sid}-${t.replace(/[^a-z0-9]/gi,'_')}`);
+  if (!state.pendingPerms[cid][sid]) state.pendingPerms[cid][sid] = emptyPermBucket();
+  state.pendingPerms[cid][sid][type] = new Set(permissionItemsForServer(server, type));
+  permissionItemsForServer(server, type).forEach(value => {
+    const el = document.getElementById(`pt-${type}-${cid}-${sid}-${value.replace(/[^a-z0-9]/gi,'_')}`);
     if (el) { el.classList.add('allowed'); el.querySelector('.perm-tool-checkbox').textContent='✓'; }
   });
   const toggle = document.querySelector(`#psr-${cid}-${sid} input[type=checkbox]`);
   if (toggle) toggle.checked = true;
 }
 
-function clearAllTools(cid, sid) {
+function clearAllForType(cid, sid, type) {
   const server = state.servers.find(s=>s.id===sid);
-  if (state.pendingPerms[cid]) delete state.pendingPerms[cid][sid];
-  server.tools.forEach(t => {
-    const el = document.getElementById(`pt-${cid}-${sid}-${t.replace(/[^a-z0-9]/gi,'_')}`);
+  if (state.pendingPerms[cid] && state.pendingPerms[cid][sid]) state.pendingPerms[cid][sid][type] = new Set();
+  permissionItemsForServer(server, type).forEach(value => {
+    const el = document.getElementById(`pt-${type}-${cid}-${sid}-${value.replace(/[^a-z0-9]/gi,'_')}`);
     if (el) { el.classList.remove('allowed'); el.querySelector('.perm-tool-checkbox').textContent=''; }
   });
+  if (state.pendingPerms[cid] && state.pendingPerms[cid][sid] && !serverPermissionEnabled(state.pendingPerms[cid][sid])) {
+    delete state.pendingPerms[cid][sid];
+  }
+  const toggle = document.querySelector(`#psr-${cid}-${sid} input[type=checkbox]`);
+  if (toggle) toggle.checked = !!(state.pendingPerms[cid] && state.pendingPerms[cid][sid]);
 }
 
 async function savePermissions() {
@@ -372,8 +434,12 @@ async function savePermissions() {
   if (!cid) return;
   const pending = state.pendingPerms[cid] || {};
   const permissions = {};
-  Object.entries(pending).forEach(([sid, tools]) => {
-    if (tools.size > 0) permissions[sid] = [...tools];
+  Object.entries(pending).forEach(([sid, serverPerms]) => {
+    const bucket = {};
+    PERMISSION_TYPES.forEach(type => {
+      if (serverPerms[type] && serverPerms[type].size > 0) bucket[type] = [...serverPerms[type]];
+    });
+    if (Object.keys(bucket).length > 0) permissions[sid] = bucket;
   });
   try {
     await PUT(`/admin/clients/${cid}/permissions`, { permissions });

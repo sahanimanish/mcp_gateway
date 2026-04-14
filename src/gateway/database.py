@@ -115,10 +115,12 @@ class Client(Base):
 class Permission(Base):
     __tablename__ = "permissions"
 
-    id        = Column(String, primary_key=True, default=new_id)
-    client_id = Column(String, ForeignKey("clients.id"), nullable=False)
-    server_id = Column(String, ForeignKey("servers.id"), nullable=False)
-    tool_name = Column(String, nullable=False)
+    id               = Column(String, primary_key=True, default=new_id)
+    client_id        = Column(String, ForeignKey("clients.id"), nullable=False)
+    server_id        = Column(String, ForeignKey("servers.id"), nullable=False)
+    tool_name        = Column(String, nullable=False, default="")
+    permission_type  = Column(String, nullable=False, default="tool")
+    permission_value = Column(String, nullable=False, default="")
 
     client = relationship("Client", back_populates="permissions")
     server = relationship("MCPServer")
@@ -168,3 +170,10 @@ async def _apply_sqlite_migrations(conn):
         await conn.exec_driver_sql("ALTER TABLE prompts ADD COLUMN title VARCHAR DEFAULT ''")
     if "icons" not in prompts_columns:
         await conn.exec_driver_sql("ALTER TABLE prompts ADD COLUMN icons JSON")
+
+    permission_columns = await column_names("permissions")
+    if "permission_type" not in permission_columns:
+        await conn.exec_driver_sql("ALTER TABLE permissions ADD COLUMN permission_type VARCHAR DEFAULT 'tool'")
+    if "permission_value" not in permission_columns:
+        await conn.exec_driver_sql("ALTER TABLE permissions ADD COLUMN permission_value VARCHAR DEFAULT ''")
+        await conn.exec_driver_sql("UPDATE permissions SET permission_value = tool_name WHERE permission_value = '' OR permission_value IS NULL")

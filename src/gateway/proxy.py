@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -86,6 +87,16 @@ def _strip_gateway_prompt_name(prompt_name: str) -> tuple[str | None, str]:
     if "__" not in prompt_name:
         return None, prompt_name
     return prompt_name.split("__", 1)
+
+
+def _template_to_pattern(uri_template: str) -> re.Pattern[str]:
+    pattern = re.escape(uri_template)
+    pattern = re.sub(r"\\\{[^{}]+\\\}", r"[^/]+", pattern)
+    return re.compile(f"^{pattern}$")
+
+
+def _resource_matches_templates(uri: str, templates: set[str]) -> bool:
+    return any(_template_to_pattern(template).match(uri) for template in templates)
 
 
 async def _get_session_id(server_url: str, upstream_key: str) -> Optional[str]:
@@ -200,7 +211,12 @@ async def mcp_endpoint(
     auth=Depends(get_client_by_key),
     db: AsyncSession = Depends(get_db),
 ):
-    client, allowed_tools, allowed_server_ids = auth
+    client, permissions_by_server, allowed_server_ids = auth
+    allowed_tools = {
+        tool_name
+        for server_permissions in permissions_by_server.values()
+        for tool_name in server_permissions["tools"]
+    }
     body = await request.json()
     method = body.get("method", "")
     rpc_id = body.get("id")
@@ -248,6 +264,9 @@ async def mcp_endpoint(
         )
         prompts_out = []
         for prompt, server in result.all():
+            server_permissions = permissions_by_server.get(server.id, {})
+            if prompt.name not in server_permissions.get("prompts", set()):
+                continue
             prompts_out.append({
                 "name": _gateway_prompt_name(server.name, prompt.name),
                 "title": prompt.title or prompt.name,
@@ -282,6 +301,10 @@ async def mcp_endpoint(
             return JSONResponse(rpc_error(rpc_id, -32601, f"Prompt not found: '{prompt_name}'"), status_code=404)
 
         prompt, server = row
+        server_permissions = permissions_by_server.get(server.id, {})
+        if prompt.name not in server_permissions.get("prompts", set()):
+            await _log(db, "prompts/get", client.name, prompt_name, 403, "Prompt access denied")
+            return JSONResponse(rpc_error(rpc_id, -32603, f"Access denied: '{prompt_name}'"), status_code=403)
         response = await _send_upstream_rpc(
             server.url,
             server.name,
@@ -300,16 +323,21 @@ async def mcp_endpoint(
             .where(MCPResource.server_id.in_(allowed_server_ids))
             .order_by(MCPResource.name, MCPResource.uri)
         )
-        resources_out = [{
-            "uri": resource.uri,
-            "name": resource.name,
-            "title": resource.title,
-            "description": resource.description,
-            "mimeType": resource.mime_type,
-            "size": resource.size,
-            "icons": resource.icons or [],
-            "annotations": resource.annotations or {},
-        } for resource in result.scalars().all()]
+        resources_out = []
+        for resource in result.scalars().all():
+            server_permissions = permissions_by_server.get(resource.server_id, {})
+            if resource.uri not in server_permissions.get("resources", set()):
+                continue
+            resources_out.append({
+                "uri": resource.uri,
+                "name": resource.name,
+                "title": resource.title,
+                "description": resource.description,
+                "mimeType": resource.mime_type,
+                "size": resource.size,
+                "icons": resource.icons or [],
+                "annotations": resource.annotations or {},
+            })
         await _log(db, "resources/list", client.name, "—", 200, f"{len(resources_out)} resources visible")
         return JSONResponse(rpc_ok(rpc_id, {"resources": resources_out}))
 
@@ -319,35 +347,83 @@ async def mcp_endpoint(
             .where(MCPResourceTemplate.server_id.in_(allowed_server_ids))
             .order_by(MCPResourceTemplate.name, MCPResourceTemplate.uri_template)
         )
-        templates_out = [{
-            "uriTemplate": template.uri_template,
-            "name": template.name,
-            "title": template.title,
-            "description": template.description,
-            "mimeType": template.mime_type,
-            "icons": template.icons or [],
-            "annotations": template.annotations or {},
-        } for template in result.scalars().all()]
+        templates_out = []
+        for template in result.scalars().all():
+            server_permissions = permissions_by_server.get(template.server_id, {})
+            if template.uri_template not in server_permissions.get("resource_templates", set()):
+                continue
+            templates_out.append({
+                "uriTemplate": template.uri_template,
+                "name": template.name,
+                "title": template.title,
+                "description": template.description,
+                "mimeType": template.mime_type,
+                "icons": template.icons or [],
+                "annotations": template.annotations or {},
+            })
         await _log(db, "resources/templates/list", client.name, "—", 200, f"{len(templates_out)} templates visible")
         return JSONResponse(rpc_ok(rpc_id, {"resourceTemplates": templates_out}))
 
     if method == "resources/read":
         params = body.get("params", {})
         uri = params.get("uri", "")
-        result = await db.execute(
+        resource_result = await db.execute(
             select(MCPResource, MCPServer)
             .join(MCPServer, MCPResource.server_id == MCPServer.id)
             .where(MCPResource.uri == uri, MCPResource.server_id.in_(allowed_server_ids))
         )
-        matches = result.all()
-        if not matches:
+        matches = resource_result.all()
+        allowed_matches = [
+            (resource, server) for resource, server in matches
+            if (
+                resource.uri in permissions_by_server.get(server.id, {}).get("resources", set())
+                or _resource_matches_templates(
+                    resource.uri,
+                    permissions_by_server.get(server.id, {}).get("resource_templates", set()),
+                )
+            )
+        ]
+
+        if not allowed_matches:
+            template_result = await db.execute(
+                select(MCPResourceTemplate, MCPServer)
+                .join(MCPServer, MCPResourceTemplate.server_id == MCPServer.id)
+                .where(MCPResourceTemplate.server_id.in_(allowed_server_ids))
+            )
+            template_matches = [
+                (template, server) for template, server in template_result.all()
+                if (
+                    template.uri_template in permissions_by_server.get(server.id, {}).get("resource_templates", set())
+                    and _resource_matches_templates(uri, {template.uri_template})
+                )
+            ]
+            if len(template_matches) == 1:
+                _, server = template_matches[0]
+                response = await _send_upstream_rpc(
+                    server.url,
+                    server.name,
+                    server.upstream_key or "",
+                    (server.server_info or {}).get("_transport", "http"),
+                    rpc_id,
+                    "resources/read",
+                    {"uri": uri},
+                )
+                await _log(db, "resources/read", client.name, uri, 200 if "error" not in response else 502)
+                return JSONResponse(response, status_code=200 if "error" not in response else 502)
+            if len(template_matches) > 1:
+                await _log(db, "resources/read", client.name, uri, 409, "Ambiguous resource URI")
+                return JSONResponse(rpc_error(rpc_id, -32602, f"Ambiguous resource URI across multiple servers: '{uri}'"), status_code=409)
+            if matches:
+                await _log(db, "resources/read", client.name, uri, 403, "Resource access denied")
+                return JSONResponse(rpc_error(rpc_id, -32603, f"Access denied: '{uri}'"), status_code=403)
             await _log(db, "resources/read", client.name, uri, 404, "Resource not found")
             return JSONResponse(rpc_error(rpc_id, -32601, f"Resource not found: '{uri}'"), status_code=404)
-        if len(matches) > 1:
+
+        if len(allowed_matches) > 1:
             await _log(db, "resources/read", client.name, uri, 409, "Ambiguous resource URI")
             return JSONResponse(rpc_error(rpc_id, -32602, f"Ambiguous resource URI across multiple servers: '{uri}'"), status_code=409)
 
-        resource, server = matches[0]
+        resource, server = allowed_matches[0]
         response = await _send_upstream_rpc(
             server.url,
             server.name,

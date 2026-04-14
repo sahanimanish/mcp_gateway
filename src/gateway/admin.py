@@ -30,6 +30,39 @@ async def log_action(db, method, client_name, tool, status, detail=""):
     await db.commit()
 
 
+PERMISSION_TYPES = ("tools", "prompts", "resources", "resource_templates")
+
+
+def _empty_permission_bucket() -> dict[str, list[str]]:
+    return {permission_type: [] for permission_type in PERMISSION_TYPES}
+
+
+def _normalize_permission_row(permission: Permission) -> tuple[str, str]:
+    permission_type = (permission.permission_type or "tool").strip().lower()
+    if permission_type == "tool":
+        permission_type = "tools"
+    elif permission_type == "prompt":
+        permission_type = "prompts"
+    elif permission_type == "resource":
+        permission_type = "resources"
+    elif permission_type in ("resource_template", "template"):
+        permission_type = "resource_templates"
+
+    permission_value = permission.permission_value or permission.tool_name
+    return permission_type, permission_value
+
+
+def _normalize_permission_payload(payload: dict[str, dict[str, list[str]]]) -> dict[str, dict[str, list[str]]]:
+    normalized: dict[str, dict[str, list[str]]] = {}
+    for server_id, server_permissions in payload.items():
+        bucket = _empty_permission_bucket()
+        for permission_type in PERMISSION_TYPES:
+            values = server_permissions.get(permission_type, []) if isinstance(server_permissions, dict) else []
+            bucket[permission_type] = sorted({value for value in values if value})
+        normalized[server_id] = bucket
+    return normalized
+
+
 def _server_load_opts():
     return (
         selectinload(MCPServer.tools),
@@ -282,9 +315,11 @@ async def get_permissions(client_id: str, db: AsyncSession = Depends(get_db)):
     if not client:
         raise HTTPException(404, "Client not found")
     perms = (await db.execute(select(Permission).where(Permission.client_id == client_id))).scalars().all()
-    grouped: dict[str, list] = {}
+    grouped: dict[str, dict[str, list[str]]] = {}
     for p in perms:
-        grouped.setdefault(p.server_id, []).append(p.tool_name)
+        permission_type, permission_value = _normalize_permission_row(p)
+        grouped.setdefault(p.server_id, _empty_permission_bucket())[permission_type].append(permission_value)
+    grouped = _normalize_permission_payload(grouped)
     return ClientPermsSummary(client_id=client_id, client_name=client.name, permissions=grouped)
 
 
@@ -297,17 +332,26 @@ async def set_permissions(client_id: str, body: PermissionSet, db: AsyncSession 
     await db.execute(delete(Permission).where(Permission.client_id == client_id))
 
     count = 0
-    for server_id, tools in body.permissions.items():
+    normalized_permissions = _normalize_permission_payload(body.permissions)
+    for server_id, server_permissions in normalized_permissions.items():
         server = (await db.execute(select(MCPServer).where(MCPServer.id == server_id))).scalar_one_or_none()
         if not server:
             continue
-        for tool_name in tools:
-            db.add(Permission(id=new_id(), client_id=client_id, server_id=server_id, tool_name=tool_name))
-            count += 1
+        for permission_type, values in server_permissions.items():
+            for permission_value in values:
+                db.add(Permission(
+                    id=new_id(),
+                    client_id=client_id,
+                    server_id=server_id,
+                    tool_name=permission_value if permission_type == "tools" else "",
+                    permission_type=permission_type.rstrip("s"),
+                    permission_value=permission_value,
+                ))
+                count += 1
 
     await db.commit()
     await log_action(db, "permission/save", "admin", "—", 200, f"Set {count} permissions for {client.name}")
-    return ClientPermsSummary(client_id=client_id, client_name=client.name, permissions=body.permissions)
+    return ClientPermsSummary(client_id=client_id, client_name=client.name, permissions=normalized_permissions)
 
 
 @router.get("/permissions/matrix")
@@ -318,9 +362,10 @@ async def permissions_matrix(db: AsyncSession = Depends(get_db)):
     )).scalars().all()
     all_perms = (await db.execute(select(Permission))).scalars().all()
 
-    perm_index: dict[str, dict[str, list]] = {}
+    perm_index: dict[str, dict[str, dict[str, list[str]]]] = {}
     for p in all_perms:
-        perm_index.setdefault(p.client_id, {}).setdefault(p.server_id, []).append(p.tool_name)
+        permission_type, permission_value = _normalize_permission_row(p)
+        perm_index.setdefault(p.client_id, {}).setdefault(p.server_id, _empty_permission_bucket())[permission_type].append(permission_value)
 
     return {
         "clients": [{"id": c.id, "name": c.name} for c in clients],
@@ -329,12 +374,13 @@ async def permissions_matrix(db: AsyncSession = Depends(get_db)):
                 "id": s.id, "name": s.name,
                 "tools": [t.name for t in s.tools],
                 "resources": [r.uri for r in s.resources],
+                "resource_templates": [t.uri_template for t in s.resource_templates],
                 "prompts": [p.name for p in s.prompts],
             }
             for s in servers
         ],
         "permissions": {
-            cid: {sid: tools for sid, tools in smap.items()}
+            cid: {sid: _normalize_permission_payload({sid: values})[sid] for sid, values in smap.items()}
             for cid, smap in perm_index.items()
         }
     }
@@ -370,9 +416,10 @@ async def export_config(db: AsyncSession = Depends(get_db)):
     clients = (await db.execute(select(Client))).scalars().all()
     all_perms = (await db.execute(select(Permission))).scalars().all()
 
-    perm_index: dict[str, dict[str, list]] = {}
+    perm_index: dict[str, dict[str, dict[str, list[str]]]] = {}
     for p in all_perms:
-        perm_index.setdefault(p.client_id, {}).setdefault(p.server_id, []).append(p.tool_name)
+        permission_type, permission_value = _normalize_permission_row(p)
+        perm_index.setdefault(p.client_id, {}).setdefault(p.server_id, _empty_permission_bucket())[permission_type].append(permission_value)
 
     srv_map = {s.id: s.name for s in servers}
 
@@ -410,8 +457,8 @@ async def export_config(db: AsyncSession = Depends(get_db)):
             {
                 "name": c.name, "api_key": c.api_key,
                 "permissions": [
-                    {"server": srv_map.get(sid, sid), "tools": tools}
-                    for sid, tools in perm_index.get(c.id, {}).items()
+                    {"server": srv_map.get(sid, sid), **_normalize_permission_payload({sid: values})[sid]}
+                    for sid, values in perm_index.get(c.id, {}).items()
                 ]
             }
             for c in clients

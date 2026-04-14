@@ -138,12 +138,12 @@ class ClientOut(BaseModel):
 # ── Permissions ─────────────────────────────────────────────────
 
 class PermissionSet(BaseModel):
-    permissions: dict[str, List[str]]   # server_id → [tool_name, ...]
+    permissions: dict[str, dict[str, List[str]]]
 
 class ClientPermsSummary(BaseModel):
     client_id:   str
     client_name: str
-    permissions: dict[str, List[str]]
+    permissions: dict[str, dict[str, List[str]]]
 
 
 # ── Logs ────────────────────────────────────────────────────────
