@@ -2,9 +2,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Any
 from datetime import datetime
 
-
 # ── Tool ────────────────────────────────────────────────────────
-
 class ToolOut(BaseModel):
     id:           str
     name:         str
@@ -15,54 +13,39 @@ class ToolOut(BaseModel):
     class Config:
         from_attributes = True
 
-
 # ── Resource ────────────────────────────────────────────────────
-
 class ResourceOut(BaseModel):
     id:          str
     uri:         str
     name:        str
-    title:       str
     description: str
     mime_type:   str
-    size:        Optional[int] = None
-    icons:       List[dict] = []
-    annotations: dict = {}
 
     class Config:
         from_attributes = True
 
-
+# ── Resource Template ───────────────────────────────────────────
 class ResourceTemplateOut(BaseModel):
     id:           str
     uri_template: str
     name:         str
-    title:        str
     description:  str
     mime_type:    str
-    icons:        List[dict] = []
-    annotations:  dict = {}
 
     class Config:
         from_attributes = True
-
 
 # ── Prompt ──────────────────────────────────────────────────────
-
 class PromptOut(BaseModel):
     id:          str
-    name:        str
-    title:       str
+    name:        str   # 🔴 FIXED: Pydantic will look for 'name', not 'title'
     description: str
     arguments:   list
-    icons:       List[dict] = []
 
     class Config:
         from_attributes = True
 
-
 # ── Server ──────────────────────────────────────────────────────
-
 class ServerCreate(BaseModel):
     name:         str
     url:          str
@@ -86,33 +69,30 @@ class ServerOut(BaseModel):
     capabilities:     dict
     created_at:       datetime
     last_seen:        Optional[datetime]
-    tools:            List[ToolOut]     = []
-    resources:        List[ResourceOut] = []
+    tools:              List[ToolOut]             = []
+    resources:          List[ResourceOut]         = []
     resource_templates: List[ResourceTemplateOut] = []
-    prompts:          List[PromptOut]   = []
+    prompts:            List[PromptOut]           = []
 
     class Config:
         from_attributes = True
 
 class DiscoveryPreview(BaseModel):
-    """Returned from /admin/servers/preview before actually registering."""
-    reachable:        bool
-    error:            str = ""
-    protocol_version: str
-    server_info:      dict
-    capabilities:     dict
-    tool_count:       int
-    resource_count:   int
-    resource_template_count: int
-    prompt_count:     int
-    tools:     List[dict] = []
-    resources: List[dict] = []
+    reachable:               bool
+    error:                   str = ""
+    protocol_version:        str
+    server_info:             dict
+    capabilities:            dict
+    tool_count:              int
+    resource_count:          int
+    prompt_count:            int
+    resource_template_count: int = 0
+    tools:              List[dict] = []
+    resources:          List[dict] = []
+    prompts:            List[dict] = []
     resource_templates: List[dict] = []
-    prompts:   List[dict] = []
-
 
 # ── Client ──────────────────────────────────────────────────────
-
 class ClientCreate(BaseModel):
     name:        str
     description: Optional[str] = ""
@@ -134,20 +114,16 @@ class ClientOut(BaseModel):
     class Config:
         from_attributes = True
 
-
 # ── Permissions ─────────────────────────────────────────────────
-
 class PermissionSet(BaseModel):
-    permissions: dict[str, dict[str, List[str]]]
+    permissions: dict[str, List[str]]   # server_id → [tool_name, ...]
 
 class ClientPermsSummary(BaseModel):
     client_id:   str
     client_name: str
-    permissions: dict[str, dict[str, List[str]]]
-
+    permissions: dict[str, List[str]]
 
 # ── Logs ────────────────────────────────────────────────────────
-
 class LogOut(BaseModel):
     id:          int
     timestamp:   datetime
@@ -160,9 +136,7 @@ class LogOut(BaseModel):
     class Config:
         from_attributes = True
 
-
 # ── Stats ────────────────────────────────────────────────────────
-
 class StatsOut(BaseModel):
     servers:     int
     clients:     int
@@ -171,9 +145,7 @@ class StatsOut(BaseModel):
     prompts:     int
     permissions: int
 
-
 # ── MCP JSON-RPC ─────────────────────────────────────────────────
-
 class JSONRPCRequest(BaseModel):
     jsonrpc: str = "2.0"
     id:      Optional[int | str] = None

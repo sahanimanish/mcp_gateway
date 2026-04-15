@@ -374,6 +374,17 @@ td.primary { color: var(--text); font-weight: 500; }
   border-radius: var(--radius);
   overflow: hidden;
 }
+
+.perm-section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text3);
+    margin: 12px 0 6px 0;
+    font-family: var(--mono);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 2px;
+}
 .perm-server-row {
   border-bottom: 1px solid var(--border);
 }

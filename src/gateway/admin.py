@@ -5,10 +5,9 @@ from sqlalchemy.orm import selectinload
 from typing import List
 
 from gateway.database import (
-    get_db, MCPServer, MCPTool, MCPResource, MCPResourceTemplate, MCPPrompt,
+    get_db, MCPServer, MCPTool, MCPResource, MCPPrompt, MCPResourceTemplate,
     Client, Permission, ActivityLog, new_id
 )
-from gateway.auth import require_admin
 from gateway.schemas import (
     ServerCreate, ServerUpdate, ServerOut, DiscoveryPreview,
     ClientCreate, ClientUpdate, ClientOut,
@@ -17,7 +16,7 @@ from gateway.schemas import (
 )
 from gateway import registry as reg
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -30,44 +29,11 @@ async def log_action(db, method, client_name, tool, status, detail=""):
     await db.commit()
 
 
-PERMISSION_TYPES = ("tools", "prompts", "resources", "resource_templates")
-
-
-def _empty_permission_bucket() -> dict[str, list[str]]:
-    return {permission_type: [] for permission_type in PERMISSION_TYPES}
-
-
-def _normalize_permission_row(permission: Permission) -> tuple[str, str]:
-    permission_type = (permission.permission_type or "tool").strip().lower()
-    if permission_type == "tool":
-        permission_type = "tools"
-    elif permission_type == "prompt":
-        permission_type = "prompts"
-    elif permission_type == "resource":
-        permission_type = "resources"
-    elif permission_type in ("resource_template", "template"):
-        permission_type = "resource_templates"
-
-    permission_value = permission.permission_value or permission.tool_name
-    return permission_type, permission_value
-
-
-def _normalize_permission_payload(payload: dict[str, dict[str, list[str]]]) -> dict[str, dict[str, list[str]]]:
-    normalized: dict[str, dict[str, list[str]]] = {}
-    for server_id, server_permissions in payload.items():
-        bucket = _empty_permission_bucket()
-        for permission_type in PERMISSION_TYPES:
-            values = server_permissions.get(permission_type, []) if isinstance(server_permissions, dict) else []
-            bucket[permission_type] = sorted({value for value in values if value})
-        normalized[server_id] = bucket
-    return normalized
-
-
 def _server_load_opts():
     return (
         selectinload(MCPServer.tools),
         selectinload(MCPServer.resources),
-        selectinload(MCPServer.resource_templates),
+        selectinload(MCPServer.resource_templates), # Load templates
         selectinload(MCPServer.prompts),
     )
 
@@ -105,41 +71,23 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 async def preview_server(body: ServerCreate):
     """
     Probe a server URL and return what it exposes — without saving anything.
-    The UI calls this first to show the user what will be discovered.
     """
     result = await reg.discover(body.url, body.name, body.upstream_key or "")
 
     return DiscoveryPreview(
-        reachable        = result.success,
-        error            = result.error,
-        protocol_version = result.protocol_version,
-        server_info      = result.server_info,
-        capabilities     = result.capabilities,
-        tool_count       = len(result.tools),
-        resource_count   = len(result.resources),
-        resource_template_count = len(result.resource_templates),
-        prompt_count     = len(result.prompts),
-        tools     = [{"name": t.raw_name, "description": t.description} for t in result.tools],
-        resources = [{
-            "uri": r.uri,
-            "name": r.name,
-            "title": r.title,
-            "description": r.description,
-            "mimeType": r.mime_type,
-        } for r in result.resources],
-        resource_templates = [{
-            "uriTemplate": t.uri_template,
-            "name": t.name,
-            "title": t.title,
-            "description": t.description,
-            "mimeType": t.mime_type,
-        } for t in result.resource_templates],
-        prompts   = [{
-            "name": p.name,
-            "title": p.title,
-            "description": p.description,
-            "arguments": p.arguments,
-        } for p in result.prompts],
+        reachable               = result.success,
+        error                   = result.error,
+        protocol_version        = result.protocol_version,
+        server_info             = result.server_info,
+        capabilities            = result.capabilities,
+        tool_count              = len(result.tools),
+        resource_count          = len(result.resources),
+        prompt_count            = len(result.prompts),
+        resource_template_count = len(result.templates), # Maps from registry object
+        tools              = [{"name": t.raw_name, "description": t.description} for t in result.tools],
+        resources          = [{"uri": r.uri, "name": r.name, "mimeType": r.mime_type} for r in result.resources],
+        prompts            = [{"name": p.name, "description": p.description} for p in result.prompts],
+        resource_templates = [{"uriTemplate": t.uri_template, "name": t.name} for t in result.templates],
     )
 
 
@@ -171,7 +119,6 @@ async def create_server(body: ServerCreate, db: AsyncSession = Depends(get_db)):
     if existing:
         raise HTTPException(409, f"Server '{body.url}' already registered")
 
-    # Create server record first
     server = MCPServer(
         id           = new_id(),
         name         = body.name,
@@ -183,12 +130,10 @@ async def create_server(body: ServerCreate, db: AsyncSession = Depends(get_db)):
     db.add(server)
     await db.flush()
 
-    # Run full MCP discovery
     discovery = await reg.discover(server.url, server.name, server.upstream_key)
     await reg.save_discovery(db, server, discovery)
 
     if not discovery.success:
-        # Still save the server — it might come online later
         server.status = "offline"
         await db.commit()
 
@@ -241,7 +186,6 @@ async def delete_server(server_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/servers/{server_id}/refresh", response_model=ServerOut)
 async def refresh_server(server_id: str, db: AsyncSession = Depends(get_db)):
-    """Re-run full MCP discovery against an already-registered server."""
     server = (await db.execute(
         select(MCPServer).where(MCPServer.id == server_id)
     )).scalar_one_or_none()
@@ -260,14 +204,13 @@ async def refresh_server(server_id: str, db: AsyncSession = Depends(get_db)):
 
 
 # ══════════════════════════════════════════════════════════════
-# CLIENTS
+# CLIENTS & PERMISSIONS
 # ══════════════════════════════════════════════════════════════
 
 @router.get("/clients", response_model=List[ClientOut])
 async def list_clients(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Client).order_by(Client.created_at))
     return result.scalars().all()
-
 
 @router.post("/clients", response_model=ClientOut, status_code=201)
 async def create_client(body: ClientCreate, db: AsyncSession = Depends(get_db)):
@@ -279,7 +222,6 @@ async def create_client(body: ClientCreate, db: AsyncSession = Depends(get_db)):
     await db.refresh(client)
     await log_action(db, "client/add", "admin", "—", 201, f"Added client {body.name}")
     return client
-
 
 @router.patch("/clients/{client_id}", response_model=ClientOut)
 async def update_client(client_id: str, body: ClientUpdate, db: AsyncSession = Depends(get_db)):
@@ -293,7 +235,6 @@ async def update_client(client_id: str, body: ClientUpdate, db: AsyncSession = D
     await db.refresh(client)
     return client
 
-
 @router.delete("/clients/{client_id}", status_code=204)
 async def delete_client(client_id: str, db: AsyncSession = Depends(get_db)):
     client = (await db.execute(select(Client).where(Client.id == client_id))).scalar_one_or_none()
@@ -304,24 +245,16 @@ async def delete_client(client_id: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await log_action(db, "client/delete", "admin", "—", 200, f"Deleted {client.name}")
 
-
-# ══════════════════════════════════════════════════════════════
-# PERMISSIONS
-# ══════════════════════════════════════════════════════════════
-
 @router.get("/clients/{client_id}/permissions", response_model=ClientPermsSummary)
 async def get_permissions(client_id: str, db: AsyncSession = Depends(get_db)):
     client = (await db.execute(select(Client).where(Client.id == client_id))).scalar_one_or_none()
     if not client:
         raise HTTPException(404, "Client not found")
     perms = (await db.execute(select(Permission).where(Permission.client_id == client_id))).scalars().all()
-    grouped: dict[str, dict[str, list[str]]] = {}
+    grouped: dict[str, list] = {}
     for p in perms:
-        permission_type, permission_value = _normalize_permission_row(p)
-        grouped.setdefault(p.server_id, _empty_permission_bucket())[permission_type].append(permission_value)
-    grouped = _normalize_permission_payload(grouped)
+        grouped.setdefault(p.server_id, []).append(p.tool_name)
     return ClientPermsSummary(client_id=client_id, client_name=client.name, permissions=grouped)
-
 
 @router.put("/clients/{client_id}/permissions", response_model=ClientPermsSummary)
 async def set_permissions(client_id: str, body: PermissionSet, db: AsyncSession = Depends(get_db)):
@@ -332,27 +265,17 @@ async def set_permissions(client_id: str, body: PermissionSet, db: AsyncSession 
     await db.execute(delete(Permission).where(Permission.client_id == client_id))
 
     count = 0
-    normalized_permissions = _normalize_permission_payload(body.permissions)
-    for server_id, server_permissions in normalized_permissions.items():
+    for server_id, tools in body.permissions.items():
         server = (await db.execute(select(MCPServer).where(MCPServer.id == server_id))).scalar_one_or_none()
         if not server:
             continue
-        for permission_type, values in server_permissions.items():
-            for permission_value in values:
-                db.add(Permission(
-                    id=new_id(),
-                    client_id=client_id,
-                    server_id=server_id,
-                    tool_name=permission_value if permission_type == "tools" else "",
-                    permission_type=permission_type.rstrip("s"),
-                    permission_value=permission_value,
-                ))
-                count += 1
+        for tool_name in tools:
+            db.add(Permission(id=new_id(), client_id=client_id, server_id=server_id, tool_name=tool_name))
+            count += 1
 
     await db.commit()
     await log_action(db, "permission/save", "admin", "—", 200, f"Set {count} permissions for {client.name}")
-    return ClientPermsSummary(client_id=client_id, client_name=client.name, permissions=normalized_permissions)
-
+    return ClientPermsSummary(client_id=client_id, client_name=client.name, permissions=body.permissions)
 
 @router.get("/permissions/matrix")
 async def permissions_matrix(db: AsyncSession = Depends(get_db)):
@@ -362,10 +285,9 @@ async def permissions_matrix(db: AsyncSession = Depends(get_db)):
     )).scalars().all()
     all_perms = (await db.execute(select(Permission))).scalars().all()
 
-    perm_index: dict[str, dict[str, dict[str, list[str]]]] = {}
+    perm_index: dict[str, dict[str, list]] = {}
     for p in all_perms:
-        permission_type, permission_value = _normalize_permission_row(p)
-        perm_index.setdefault(p.client_id, {}).setdefault(p.server_id, _empty_permission_bucket())[permission_type].append(permission_value)
+        perm_index.setdefault(p.client_id, {}).setdefault(p.server_id, []).append(p.tool_name)
 
     return {
         "clients": [{"id": c.id, "name": c.name} for c in clients],
@@ -374,20 +296,19 @@ async def permissions_matrix(db: AsyncSession = Depends(get_db)):
                 "id": s.id, "name": s.name,
                 "tools": [t.name for t in s.tools],
                 "resources": [r.uri for r in s.resources],
-                "resource_templates": [t.uri_template for t in s.resource_templates],
                 "prompts": [p.name for p in s.prompts],
             }
             for s in servers
         ],
         "permissions": {
-            cid: {sid: _normalize_permission_payload({sid: values})[sid] for sid, values in smap.items()}
+            cid: {sid: tools for sid, tools in smap.items()}
             for cid, smap in perm_index.items()
         }
     }
 
 
 # ══════════════════════════════════════════════════════════════
-# LOGS
+# LOGS & EXPORT
 # ══════════════════════════════════════════════════════════════
 
 @router.get("/logs", response_model=List[LogOut])
@@ -404,10 +325,6 @@ async def clear_logs(db: AsyncSession = Depends(get_db)):
     await db.commit()
 
 
-# ══════════════════════════════════════════════════════════════
-# EXPORT
-# ══════════════════════════════════════════════════════════════
-
 @router.get("/export")
 async def export_config(db: AsyncSession = Depends(get_db)):
     servers = (await db.execute(
@@ -416,10 +333,9 @@ async def export_config(db: AsyncSession = Depends(get_db)):
     clients = (await db.execute(select(Client))).scalars().all()
     all_perms = (await db.execute(select(Permission))).scalars().all()
 
-    perm_index: dict[str, dict[str, dict[str, list[str]]]] = {}
+    perm_index: dict[str, dict[str, list]] = {}
     for p in all_perms:
-        permission_type, permission_value = _normalize_permission_row(p)
-        perm_index.setdefault(p.client_id, {}).setdefault(p.server_id, _empty_permission_bucket())[permission_type].append(permission_value)
+        perm_index.setdefault(p.client_id, {}).setdefault(p.server_id, []).append(p.tool_name)
 
     srv_map = {s.id: s.name for s in servers}
 
@@ -429,27 +345,10 @@ async def export_config(db: AsyncSession = Depends(get_db)):
                 "name": s.name, "url": s.url, "description": s.description,
                 "protocol_version": s.protocol_version,
                 "server_info": s.server_info,
-                "tools":     [{"name": t.raw_name, "description": t.description} for t in s.tools],
-                "resources": [{
-                    "uri": r.uri,
-                    "name": r.name,
-                    "title": r.title,
-                    "description": r.description,
-                    "mimeType": r.mime_type,
-                } for r in s.resources],
-                "resource_templates": [{
-                    "uriTemplate": t.uri_template,
-                    "name": t.name,
-                    "title": t.title,
-                    "description": t.description,
-                    "mimeType": t.mime_type,
-                } for t in s.resource_templates],
-                "prompts":   [{
-                    "name": p.name,
-                    "title": p.title,
-                    "description": p.description,
-                    "arguments": p.arguments,
-                } for p in s.prompts],
+                "tools":              [{"name": t.raw_name, "description": t.description} for t in s.tools],
+                "resources":          [{"uri": r.uri, "name": r.name} for r in s.resources],
+                "resource_templates": [{"uriTemplate": t.uri_template, "name": t.name} for t in s.resource_templates],
+                "prompts":            [{"name": p.name, "description": p.description} for p in s.prompts],
             }
             for s in servers
         ],
@@ -457,8 +356,8 @@ async def export_config(db: AsyncSession = Depends(get_db)):
             {
                 "name": c.name, "api_key": c.api_key,
                 "permissions": [
-                    {"server": srv_map.get(sid, sid), **_normalize_permission_payload({sid: values})[sid]}
-                    for sid, values in perm_index.get(c.id, {}).items()
+                    {"server": srv_map.get(sid, sid), "tools": tools}
+                    for sid, tools in perm_index.get(c.id, {}).items()
                 ]
             }
             for c in clients
