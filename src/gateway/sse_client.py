@@ -19,7 +19,7 @@ class SSEServerClient:
         self._ready    = asyncio.Event()
         self._sse_http  = httpx.AsyncClient(timeout=None)
         self._post_http = httpx.AsyncClient(
-            timeout=30.0,
+            timeout=100.0,
             limits=httpx.Limits(max_connections=50, max_keepalive_connections=20)
         )
         self._lock     = asyncio.Lock()
@@ -144,7 +144,7 @@ class SSEServerClient:
             self._pending.pop(id_, None)
             if not fut.done():
                 fut.set_exception(e)
-        return await asyncio.wait_for(fut, timeout=20.0)
+        return await asyncio.wait_for(fut, timeout=300.0)
 
 _pool: dict[str, SSEServerClient] = {}
 
