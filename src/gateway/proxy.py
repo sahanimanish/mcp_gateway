@@ -9,6 +9,13 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+# 1. ADD 'MCPServer' to the import list below
+from gateway.database import get_db, ActivityLog, MCPTool, MCPResource, MCPPrompt, MCPResourceTemplate, MCPServer
+from gateway.auth import get_client_by_key
 
 from gateway.database import get_db, ActivityLog, MCPTool, MCPResource, MCPPrompt, MCPResourceTemplate
 from gateway.auth import get_client_by_key
@@ -122,6 +129,24 @@ async def mcp_endpoint(request: Request, auth=Depends(get_client_by_key), db: As
     if method == "resources/read":
         uri = body.get("params", {}).get("uri", "")
         srv_info = registry.get_server_for_resource(uri)
+        
+        # 2. ADD THIS FIX: If exact match fails, check if the URI matches a known Resource Template
+        if not srv_info:
+            templates = (await db.execute(select(MCPResourceTemplate))).scalars().all()
+            for t in templates:
+                # Extract the base URI (e.g., 'memo://note/' from 'memo://note/{slug}')
+                base_uri = t.uri_template.split('{')[0] 
+                if base_uri and uri.startswith(base_uri):
+                    # Find the server that owns this template
+                    server = (await db.execute(select(MCPServer).where(MCPServer.id == t.server_id))).scalar_one_or_none()
+                    if server:
+                        srv_info = {
+                            "url": server.url, 
+                            "key": server.upstream_key, 
+                            "transport": "http" # Gateway automatically handles SSE vs HTTP internally
+                        }
+                        break
+
         if not srv_info: return JSONResponse(rpc_error(rpc_id, -32601, "Resource not found"), status_code=404)
         return await _forward_request(request, db, client, "resource", uri, body, srv_info, rpc_id)
 
@@ -243,7 +268,19 @@ async def _call_http(request, db, client, target_name, forward_body, srv_info, r
         try:
             async with httpx.AsyncClient(timeout=60.0) as http:
                 async with http.stream("POST", srv_info["url"].rstrip("/") + "/mcp", json=forward_body, headers=headers) as resp:
-                    if resp.status_code in (401, 404) and sid: _session_cache.pop((srv_info["url"], client.api_key), None)
+                    if resp.status_code in (401, 404) and sid: 
+                        _session_cache.pop((srv_info["url"], client.api_key), None)
+                    
+                    # --- THE FIX: Check if upstream returned plain JSON ---
+                    content_type = resp.headers.get("content-type", "")
+                    if "application/json" in content_type:
+                        body_bytes = await resp.aread()
+                        msg = json.loads(body_bytes)
+                        # Yield it formatted so the downstream parser catches it
+                        yield _sse_event(msg)
+                        return
+                    # ------------------------------------------------------
+
                     async for line in resp.aiter_lines():
                         line = line.strip()
                         if line.startswith("data:"):
@@ -257,10 +294,10 @@ async def _call_http(request, db, client, target_name, forward_body, srv_info, r
                                             fut = asyncio.get_event_loop().create_future()
                                             _elicit_pending[msg.get("id")] = fut
                                             try:
-                                                resp = await asyncio.wait_for(fut, timeout=120.0)
+                                                resp_action = await asyncio.wait_for(fut, timeout=120.0)
                                             except asyncio.TimeoutError:
-                                                resp = {"jsonrpc": "2.0", "id": msg.get("id"), "result": {"action": "cancel"}}
-                                            await http.post(srv_info["url"].rstrip("/") + "/mcp", json=resp, headers=headers)
+                                                resp_action = {"jsonrpc": "2.0", "id": msg.get("id"), "result": {"action": "cancel"}}
+                                            await http.post(srv_info["url"].rstrip("/") + "/mcp", json=resp_action, headers=headers)
                                         else:
                                             await http.post(srv_info["url"].rstrip("/") + "/mcp", json={"jsonrpc": "2.0", "id": msg.get("id"), "result": {"action": "cancel"}}, headers=headers)
                                     else:
@@ -276,10 +313,11 @@ async def _call_http(request, db, client, target_name, forward_body, srv_info, r
         async for chunk in upstream_stream():
             for line in chunk.splitlines():
                 if line.startswith("data:"):
-                    msg = json.loads(line[5:])
+                    msg = json.loads(line[5:].strip())
                     if "result" in msg or "error" in msg: result_msg = msg
     except Exception as e:
         result_msg = rpc_error(rpc_id, -32603, str(e))
+        
     return JSONResponse(result_msg or rpc_error(rpc_id, -32000, "No response"))
 
 async def _call_sse(request, db, client, target_name, forward_body, srv_info, rpc_id):

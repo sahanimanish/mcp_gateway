@@ -4,14 +4,26 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KYC MCP Gateway</title>
-<link  rel="icon" type="image/png" href="./ui/icon.png" ,>
+<link rel="icon" type="image/png" href="./ui/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/ui/styles.css">
+<style>
+  /* Playground Specific Layout */
+  .pg-layout { display: flex; gap: 24px; align-items: stretch; }
+  .pg-controls { flex: 1; min-width: 300px; display: flex; flex-direction: column; gap: 16px; }
+  .pg-terminal-wrap { flex: 1.5; display: flex; flex-direction: column; min-width: 400px; }
+  .pg-terminal {
+    flex: 1; background: #090a0f; border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+    font-family: var(--mono); font-size: 13px; color: #a6accd; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; min-height: 400px; max-height: 600px;
+  }
+  .pg-terminal::-webkit-scrollbar { width: 8px; }
+  .pg-terminal::-webkit-scrollbar-track { background: #090a0f; border-radius: 8px; }
+  .pg-terminal::-webkit-scrollbar-thumb { background: #2a2e40; border-radius: 4px; }
+</style>
 </head>
 <body>
 
-<!-- Sidebar -->
 <aside class="sidebar">
   <div class="logo">
     <div class="logo-mark">KYC MCP</div>
@@ -21,6 +33,9 @@
     <div class="nav-section">Overview</div>
     <div class="nav-item active" data-page="dashboard" onclick="showPage('dashboard')">
       <span class="nav-icon">⬡</span> Dashboard
+    </div>
+    <div class="nav-item" data-page="playground" onclick="showPage('playground')">
+      <span class="nav-icon">▶</span> Playground
     </div>
     <div class="nav-section">Resources</div>
     <div class="nav-item" data-page="servers" onclick="showPage('servers')">
@@ -42,10 +57,8 @@
   </div>
 </aside>
 
-<!-- Main -->
 <main class="main">
 
-  <!-- Topbar -->
   <div class="topbar">
     <div>
       <div class="page-title" id="topbar-title">Dashboard</div>
@@ -57,161 +70,127 @@
     </div>
   </div>
 
-  <!-- ─── DASHBOARD ─── -->
   <div class="content">
   <div class="page active" id="page-dashboard">
     <div class="stats-row">
-      <div class="stat-card">
-        <div class="stat-label">MCP Servers</div>
-        <div class="stat-value stat-accent" id="stat-servers">0</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Clients</div>
-        <div class="stat-value" id="stat-clients">0</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Total Tools</div>
-        <div class="stat-value" id="stat-tools">0</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Permissions</div>
-        <div class="stat-value" id="stat-perms">0</div>
-      </div>
+      <div class="stat-card"><div class="stat-label">MCP Servers</div><div class="stat-value stat-accent" id="stat-servers">0</div></div>
+      <div class="stat-card"><div class="stat-label">Clients</div><div class="stat-value" id="stat-clients">0</div></div>
+      <div class="stat-card"><div class="stat-label">Total Tools</div><div class="stat-value" id="stat-tools">0</div></div>
+      <div class="stat-card"><div class="stat-label">Permissions</div><div class="stat-value" id="stat-perms">0</div></div>
     </div>
+    <div class="section-header"><div><div class="section-title">Registered servers</div></div></div>
+    <div class="table-wrap" id="dash-servers-table"></div>
+    <div class="section-header" style="margin-top:24px;"><div><div class="section-title">Active clients</div></div></div>
+    <div class="table-wrap" id="dash-clients-table"></div>
+  </div>
 
+  <div class="page" id="page-playground">
     <div class="section-header">
       <div>
-        <div class="section-title">Registered servers</div>
-        <div class="section-subtitle">All MCP servers connected to this gateway</div>
+        <div class="section-title">MCP Playground</div>
+        <div class="section-subtitle">Execute Tools, fetch Prompts, and read Resources directly through the gateway.</div>
       </div>
     </div>
-    <div class="table-wrap" id="dash-servers-table">
-      <div class="empty-state"><div class="empty-icon">◈</div>No servers registered yet</div>
-    </div>
+    
+    <div class="pg-layout">
+      <div class="pg-controls">
+        <div style="background:var(--bg2); padding:16px; border-radius:8px; border:1px solid var(--border); display:flex; flex-direction:column; gap:12px;">
+          
+          <div class="form-group" style="margin:0;">
+            <label class="form-label">Target Server</label>
+            <select class="form-select" id="pg-server" onchange="pgUpdateTypes()">
+              <option value="">— Select a Server —</option>
+            </select>
+          </div>
 
-    <div class="section-header">
-      <div>
-        <div class="section-title">Active clients</div>
-        <div class="section-subtitle">Clients with API keys and permission policies</div>
+          <div style="display:flex; gap:12px;">
+            <div class="form-group" style="margin:0; flex:1;">
+              <label class="form-label">Capability Type</label>
+              <select class="form-select" id="pg-type" onchange="pgUpdateItems()" disabled>
+                <option value="">—</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0; flex:2;">
+              <label class="form-label">Item</label>
+              <select class="form-select" id="pg-item" onchange="pgUpdateInputs()" disabled>
+                <option value="">—</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin:0;">
+            <label class="form-label">Run as Client</label>
+            <select class="form-select" id="pg-client" disabled>
+              <option value="">— Select an authorized client —</option>
+            </select>
+          </div>
+
+        </div>
+
+        <div id="pg-dynamic-inputs" style="display:flex; flex-direction:column; gap:12px;">
+          </div>
+
+        <button class="btn btn-primary" id="pg-execute-btn" style="padding:12px; font-size:14px; margin-top:8px;" onclick="executePlayground()" disabled>▶ Execute</button>
       </div>
-    </div>
-    <div class="table-wrap" id="dash-clients-table">
-      <div class="empty-state"><div class="empty-icon">◉</div>No clients registered yet</div>
+
+      <div class="pg-terminal-wrap">
+        <div class="form-label" style="display:flex; justify-content:space-between;">
+          <span>Terminal Output</span>
+          <span id="pg-status-badge"></span>
+        </div>
+        <div class="pg-terminal" id="pg-output">Awaiting configuration...</div>
+      </div>
     </div>
   </div>
 
-  <!-- ─── SERVERS PAGE ─── -->
   <div class="page" id="page-servers">
     <div class="section-header">
-      <div>
-        <div class="section-title">MCP Servers</div>
-        <div class="section-subtitle">Register and manage upstream MCP servers</div>
-      </div>
+      <div><div class="section-title">MCP Servers</div><div class="section-subtitle">Register and manage upstream MCP servers</div></div>
       <button class="btn btn-primary btn-sm" onclick="openAddServerModal()">+ Register server</button>
     </div>
-    <div class="table-wrap" id="servers-table">
-      <div class="empty-state"><div class="empty-icon">◈</div>No servers yet — register your first MCP server</div>
-    </div>
+    <div class="table-wrap" id="servers-table"></div>
   </div>
 
-  <!-- ─── CLIENTS PAGE ─── -->
   <div class="page" id="page-clients">
     <div class="section-header">
-      <div>
-        <div class="section-title">Clients</div>
-        <div class="section-subtitle">Manage API keys and client identities</div>
-      </div>
+      <div><div class="section-title">Clients</div><div class="section-subtitle">Manage API keys and client identities</div></div>
       <button class="btn btn-primary btn-sm" onclick="openAddClientModal()">+ Add client</button>
     </div>
-    <div class="table-wrap" id="clients-table">
-      <div class="empty-state"><div class="empty-icon">◉</div>No clients yet — add your first client</div>
-    </div>
+    <div class="table-wrap" id="clients-table"></div>
   </div>
 
-  <!-- ─── PERMISSIONS PAGE ─── -->
   <div class="page" id="page-permissions">
-    <div class="section-header">
-      <div>
-        <div class="section-title">Permission matrix</div>
-        <div class="section-subtitle">Control which clients can access which servers and tools</div>
-      </div>
-    </div>
-
+    <div class="section-header"><div><div class="section-title">Permission matrix</div><div class="section-subtitle">Control access</div></div></div>
     <div style="margin-bottom:16px; display:flex; gap:10px; align-items:center;">
       <label class="form-label" style="margin:0; white-space:nowrap">Select client</label>
-      <select class="form-select" style="max-width:260px;" id="perm-client-select" onchange="renderPermMatrix()">
-        <option value="">— choose a client —</option>
-      </select>
+      <select class="form-select" style="max-width:260px;" id="perm-client-select" onchange="renderPermMatrix()"><option value="">— choose a client —</option></select>
       <button class="btn btn-primary btn-sm" onclick="savePermissions()" id="save-perm-btn" style="display:none">Save permissions</button>
     </div>
-
-    <div id="perm-matrix-wrap">
-      <div class="empty-state" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);">
-        <div class="empty-icon">◫</div>Select a client to edit their permissions
-      </div>
-    </div>
+    <div id="perm-matrix-wrap"></div>
   </div>
 
-  <!-- ─── LOGS PAGE ─── -->
   <div class="page" id="page-logs">
     <div class="section-header">
-      <div>
-        <div class="section-title">Activity log</div>
-        <div class="section-subtitle">Recent gateway events and tool calls</div>
-      </div>
+      <div><div class="section-title">Activity log</div><div class="section-subtitle">Recent gateway events and tool calls</div></div>
       <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Clear</button>
     </div>
-    <div class="table-wrap" id="logs-wrap">
-      <div class="empty-state"><div class="empty-icon">≡</div>No activity yet</div>
-    </div>
+    <div class="table-wrap" id="logs-wrap"></div>
   </div>
   </div>
 </main>
 
-<!-- ── Modal: Add Server ── -->
 <div class="modal-overlay" id="modal-server">
   <div class="modal" style="width:600px">
-    <div class="modal-header">
-      <div class="modal-title">Register MCP server</div>
-      <button class="modal-close" onclick="closeModal('modal-server')">✕</button>
-    </div>
+    <div class="modal-header"><div class="modal-title">Register MCP server</div><button class="modal-close" onclick="closeModal('modal-server')">✕</button></div>
     <div class="modal-body">
-      <!-- Step 1: connection details -->
       <div id="srv-step1">
-        <div class="form-group">
-          <label class="form-label">Server name <span>unique identifier</span></label>
-          <input class="form-input" id="srv-name" placeholder="e.g. github, database, gdrive">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Base URL</label>
-          <input class="form-input" id="srv-url" placeholder="http://localhost:8001">
-          <div class="form-hint">Gateway will POST JSON-RPC to {url}/mcp</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Description <span>optional</span></label>
-          <input class="form-input" id="srv-desc" placeholder="Auto-filled from server if blank">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Upstream API key <span>optional</span></label>
-          <input class="form-input" id="srv-key" placeholder="Bearer token or API key for this server" type="password">
-        </div>
+        <div class="form-group"><label class="form-label">Server name</label><input class="form-input" id="srv-name" placeholder="e.g. github"></div>
+        <div class="form-group"><label class="form-label">Base URL</label><input class="form-input" id="srv-url" placeholder="http://localhost:8001"></div>
+        <div class="form-group"><label class="form-label">Description</label><input class="form-input" id="srv-desc"></div>
+        <div class="form-group"><label class="form-label">Upstream API key</label><input class="form-input" id="srv-key" type="password"></div>
       </div>
-
-      <!-- Step 2: preview results -->
       <div id="srv-preview" style="display:none">
         <div id="srv-preview-status" style="margin-bottom:14px;padding:10px 14px;border-radius:8px;font-size:13px;"></div>
-        <div id="srv-preview-tabs" style="display:none">
-          <div style="display:flex;gap:6px;margin-bottom:12px;" id="srv-tab-bar">
-            <button class="btn btn-ghost btn-sm srv-tab active" onclick="showSrvTab('tools')" data-tab="tools">Tools <span id="tc" class="badge badge-blue" style="margin-left:4px">0</span></button>
-            <button class="btn btn-ghost btn-sm srv-tab" onclick="showSrvTab('resources')" data-tab="resources">Resources <span id="rc" class="badge badge-amber" style="margin-left:4px">0</span></button>
-            <button class="btn btn-ghost btn-sm srv-tab" onclick="showSrvTab('templates')" data-tab="templates">Templates <span id="rtc" class="badge badge-blue" style="margin-left:4px">0</span></button>
-            <button class="btn btn-ghost btn-sm srv-tab" onclick="showSrvTab('prompts')" data-tab="prompts">Prompts <span id="pc" class="badge badge-gray" style="margin-left:4px">0</span></button>
-          </div>
-          <div id="srv-tab-tools" class="srv-tab-pane" style="max-height:220px;overflow-y:auto;"></div>
-          <div id="srv-tab-resources" class="srv-tab-pane" style="display:none;max-height:220px;overflow-y:auto;"></div>
-          <div id="srv-tab-templates" class="srv-tab-pane" style="display:none;max-height:220px;overflow-y:auto;"></div>
-          <div id="srv-tab-prompts" class="srv-tab-pane" style="display:none;max-height:220px;overflow-y:auto;"></div>
-        </div>
       </div>
     </div>
     <div class="modal-footer">
@@ -222,55 +201,28 @@
   </div>
 </div>
 
-<!-- ── Modal: Add Client ── -->
 <div class="modal-overlay" id="modal-client">
   <div class="modal">
-    <div class="modal-header">
-      <div class="modal-title">Add client</div>
-      <button class="modal-close" onclick="closeModal('modal-client')">✕</button>
-    </div>
+    <div class="modal-header"><div class="modal-title">Add client</div><button class="modal-close" onclick="closeModal('modal-client')">✕</button></div>
     <div class="modal-body">
-      <div class="form-group">
-        <label class="form-label">Client name</label>
-        <input class="form-input" id="cli-name" placeholder="e.g. Data Analyst Bot, DevOps Agent">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Description <span>optional</span></label>
-        <input class="form-input" id="cli-desc" placeholder="What is this client used for?">
-      </div>
+      <div class="form-group"><label class="form-label">Client name</label><input class="form-input" id="cli-name"></div>
+      <div class="form-group"><label class="form-label">Description</label><input class="form-input" id="cli-desc"></div>
       <div class="form-group">
         <label class="form-label">API key</label>
         <div style="display:flex; gap:8px;">
-          <input class="form-input" id="cli-key" placeholder="Paste a key or generate one">
-          <button class="btn btn-ghost" onclick="generateKey()" style="white-space:nowrap; flex-shrink:0;">⟳ Generate</button>
+          <input class="form-input" id="cli-key"><button class="btn btn-ghost" onclick="generateKey()" style="white-space:nowrap;">⟳ Generate</button>
         </div>
-        <div class="form-hint">Clients send this as X-Api-Key header</div>
       </div>
     </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('modal-client')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveClient()">Add client</button>
-    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('modal-client')">Cancel</button><button class="btn btn-primary" onclick="saveClient()">Add client</button></div>
   </div>
 </div>
 
-<!-- ── Modal: View Key ── -->
 <div class="modal-overlay" id="modal-key">
   <div class="modal">
-    <div class="modal-header">
-      <div class="modal-title">API key — <span id="key-modal-client"></span></div>
-      <button class="modal-close" onclick="closeModal('modal-key')">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-hint" style="margin-bottom:8px;">Send this as the <code style="color:var(--accent)">X-Api-Key</code> header with every request to the gateway.</div>
-      <div class="key-display">
-        <div class="key-value" id="key-modal-value"></div>
-        <button class="key-copy" onclick="copyKey()" title="Copy">⎘</button>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-primary" onclick="closeModal('modal-key')">Done</button>
-    </div>
+    <div class="modal-header"><div class="modal-title">API key — <span id="key-modal-client"></span></div><button class="modal-close" onclick="closeModal('modal-key')">✕</button></div>
+    <div class="modal-body"><div class="key-display"><div class="key-value" id="key-modal-value"></div><button class="key-copy" onclick="copyKey()">⎘</button></div></div>
+    <div class="modal-footer"><button class="btn btn-primary" onclick="closeModal('modal-key')">Done</button></div>
   </div>
 </div>
 

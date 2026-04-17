@@ -3,9 +3,6 @@ example_upstream.py
 -------------------
 A local MCP test server for exercising gateway tools, prompts, resources,
 and resource template flows.
-
-Usage:
-    python example_upstream.py --name docs --port 8003
 """
 
 from __future__ import annotations
@@ -18,12 +15,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--name", default="demo", help="Server name (used as tool/prompt prefix in the gateway)")
+parser.add_argument("--name", default="demo", help="Server name")
 parser.add_argument("--port", type=int, default=8001, help="Port to listen on")
 args, _ = parser.parse_known_args()
 
 app = FastAPI(title=f"MCP Server: {args.name}")
-
 
 TOOLS = [
     {
@@ -101,18 +97,14 @@ RESOURCE_TEMPLATES = [
     }
 ]
 
-
 def jsonrpc_ok(rpc_id, result):
     return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
-
 
 def jsonrpc_error(rpc_id, code: int, message: str):
     return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
 
-
 def get_prompt(name: str):
     return next((prompt for prompt in PROMPTS if prompt["name"] == name), None)
-
 
 def get_resource(uri: str):
     resource = next((item for item in RESOURCES if item["uri"] == uri), None)
@@ -129,9 +121,7 @@ def get_resource(uri: str):
             "mimeType": "text/plain",
             "text": f"Generated note for slug '{slug}' from server '{args.name}'.",
         }
-
     return None
-
 
 @app.post("/mcp")
 async def handle(request: Request):
@@ -158,6 +148,8 @@ async def handle(request: Request):
         tool = params.get("name", "")
         arguments = params.get("arguments", {}) or {}
 
+        print(f"Tool call: {tool} with arguments {arguments}")
+
         if tool == "echo":
             content = arguments.get("message", "(no message)")
         elif tool == "ping":
@@ -169,6 +161,9 @@ async def handle(request: Request):
         else:
             return JSONResponse(jsonrpc_error(rpc_id, -32601, f"Unknown tool: {tool}"))
 
+        print(f"Tool response: {content}")
+        
+        # ✅ Perfectly formatted JSON-RPC return
         return JSONResponse(jsonrpc_ok(rpc_id, {
             "content": [{"type": "text", "text": str(content)}]
         }))
@@ -234,7 +229,6 @@ async def handle(request: Request):
         }))
 
     return JSONResponse(jsonrpc_error(rpc_id, -32601, "Method not found"))
-
 
 if __name__ == "__main__":
     print(f"\n  Upstream MCP server '{args.name}' listening on port {args.port}")
