@@ -4,11 +4,15 @@ style.innerHTML = `
   .perm-tool-item { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; align-items: center; max-width: 100%; cursor: pointer; }
   .perm-tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .perm-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); margin: 12px 0 6px 0; font-family: var(--mono); border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+  
+  .preview-item { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+  .preview-item-name { font-family: var(--mono); color: var(--accent); font-size: 13px; font-weight: 500; }
+  .preview-item-desc { color: var(--text3); font-size: 12px; margin-top: 4px; }
 `;
 document.head.appendChild(style);
 
 // ── Config ──────────────────────────────────────────────────────
-const API_BASE = '';          // same origin
+const API_BASE = '';          
 const ADMIN_KEY = 'admin-secret-change-me';
 
 const headers = (extra = {}) => ({
@@ -53,7 +57,6 @@ async function loadAll() {
     state.servers = servers.map(s => ({
       ...s, desc: s.description,
       tools: s.tools || [], 
-      // Merge normal resources and resource templates into one list for the UI
       resources: [...(s.resources || []), ...(s.resource_templates || [])], 
       prompts: s.prompts || [],
     }));
@@ -76,7 +79,7 @@ async function loadAll() {
 
     renderAll();
     updateGatewayStatus();
-    initPlaygroundServers(); // Setup Playground
+    initPlaygroundServers(); 
   } catch (e) {
     showToast('Backend error: ' + e.message);
   }
@@ -281,7 +284,7 @@ function pgUpdateInputs() {
   _pgSelectedData = item;
   const fullItemName = item.name || item.uriTemplate || item.uri;
 
-  // 1. Build Inputs based on Type
+  // Build Inputs based on Type
   if (type === 'tools') {
     let schemaStr = '{}';
     let hintHtml = '<span style="color:var(--text3)">No schema constraints.</span>';
@@ -320,7 +323,6 @@ function pgUpdateInputs() {
     `;
   }
   else if (type === 'resources') {
-    // FIXED: Render input field (without readonly!) so user can fill template values
     const defaultUri = item.uriTemplate || item.uri || '';
     inputsDiv.innerHTML = `
       <div class="form-group" style="margin:0;">
@@ -331,7 +333,7 @@ function pgUpdateInputs() {
     `;
   }
 
-  // 2. Filter Clients based on Permission
+  // Filter Clients based on Permission
   const allowedClients = state.clients.filter(c => c.perms && c.perms[sid] && c.perms[sid].has(fullItemName));
 
   if (allowedClients.length === 0) {
@@ -376,7 +378,6 @@ async function executePlayground() {
   }
   else if (type === 'resources') {
     payload.method = "resources/read";
-    // FIXED: Read from the input box directly
     const actualUri = document.getElementById('pg-res-uri').value.trim();
     payload.params = { uri: actualUri };
   }
@@ -411,7 +412,6 @@ async function executePlayground() {
       else if (type === 'prompts' && data.result?.messages) {
         outputStr = data.result.messages.map(m => `[${m.role.toUpperCase()}]\n${m.content.text || m.content.type}`).join('\n\n---\n\n');
       }
-      // FIXED: Render actual response contents for resources here (restored old logic)
       else if (type === 'resources' && data.result?.contents) {
         outputStr = data.result.contents.map(c => `URI: ${c.uri}\nMIME: ${c.mimeType}\n\n${c.text || c.blob}`).join('\n\n');
       }
@@ -427,13 +427,6 @@ async function executePlayground() {
     badgeEl.innerHTML = '<span class="badge badge-red">Failed</span>';
   } finally {
     btn.disabled = false;
-    GET('/admin/logs?limit=50').then(logs => {
-      state.logs = logs.map(l => ({
-        time: new Date(l.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        method: l.method, client: l.client_name, tool: l.tool, status: l.status
-      }));
-      renderLogs();
-    }).catch(() => { });
   }
 }
 
@@ -571,31 +564,121 @@ function renderLogs() {
 
 // ── Modals & Actions ──────────────────────────────────────────────
 let _srvPreviewed = false;
-function openAddServerModal() { ['srv-name', 'srv-url', 'srv-desc', 'srv-key'].forEach(id => document.getElementById(id).value = ''); document.getElementById('srv-step1').style.display = ''; document.getElementById('srv-preview').style.display = 'none'; document.getElementById('srv-main-btn').textContent = 'Test connection →'; document.getElementById('srv-back-btn').style.display = 'none'; _srvPreviewed = false; openModal('modal-server'); }
-function srvBack() { document.getElementById('srv-step1').style.display = ''; document.getElementById('srv-preview').style.display = 'none'; document.getElementById('srv-main-btn').textContent = 'Test connection →'; document.getElementById('srv-back-btn').style.display = 'none'; _srvPreviewed = false; }
-async function srvMainAction() { if (!_srvPreviewed) { await previewServer(); } else { await saveServer(); } }
+
+function openAddServerModal() {
+  ['srv-name', 'srv-url', 'srv-desc', 'srv-key'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('srv-step1').style.display = '';
+  document.getElementById('srv-preview').style.display = 'none';
+  document.getElementById('srv-main-btn').textContent = 'Test connection →';
+  document.getElementById('srv-back-btn').style.display = 'none';
+  _srvPreviewed = false;
+  openModal('modal-server');
+}
+
+function srvBack() {
+  document.getElementById('srv-step1').style.display = '';
+  document.getElementById('srv-preview').style.display = 'none';
+  document.getElementById('srv-main-btn').textContent = 'Test connection →';
+  document.getElementById('srv-back-btn').style.display = 'none';
+  _srvPreviewed = false;
+}
+
+async function srvMainAction() {
+  if (!_srvPreviewed) { await previewServer(); } 
+  else                { await saveServer(); }
+}
+
 async function previewServer() {
-  const name = document.getElementById('srv-name').value.trim(); const url = document.getElementById('srv-url').value.trim(); const key = document.getElementById('srv-key').value.trim();
+  const name = document.getElementById('srv-name').value.trim();
+  const url = document.getElementById('srv-url').value.trim();
+  const key = document.getElementById('srv-key').value.trim();
+  
   if (!name || !url) { alert('Name and URL required.'); return; }
-  const btn = document.getElementById('srv-main-btn'); btn.textContent = 'Connecting…'; btn.disabled = true;
+  
+  const btn = document.getElementById('srv-main-btn');
+  btn.textContent = 'Connecting…'; btn.disabled = true;
+  
   try {
     const preview = await POST('/admin/servers/preview', { name, url, description: '', upstream_key: key });
-    document.getElementById('srv-step1').style.display = 'none'; document.getElementById('srv-preview').style.display = ''; document.getElementById('srv-back-btn').style.display = '';
+    
+    document.getElementById('srv-step1').style.display = 'none';
+    document.getElementById('srv-preview').style.display = '';
+    document.getElementById('srv-back-btn').style.display = '';
+    
     const statusEl = document.getElementById('srv-preview-status');
+    
     if (preview.reachable) {
-      statusEl.style.background = 'var(--accent-dim)'; statusEl.style.border = '1px solid rgba(0,229,160,0.25)'; statusEl.innerHTML = `<span style="color:var(--accent);font-weight:500">● Connected</span> &nbsp;·&nbsp; <span style="color:var(--text3);font-family:var(--mono);font-size:11px">MCP ${preview.protocol_version}</span>`;
-      btn.textContent = 'Register server'; _srvPreviewed = true;
+      statusEl.style.background = 'var(--accent-dim)';
+      statusEl.style.border = '1px solid rgba(0,229,160,0.25)';
+      statusEl.innerHTML = `<span style="color:var(--accent);font-weight:500">● Connected</span> &nbsp;·&nbsp; <span style="color:var(--text3);font-family:var(--mono);font-size:11px">MCP ${preview.protocol_version}</span>`;
+      btn.textContent = 'Register server';
+      _srvPreviewed = true;
+
+      let tabsWrap = document.getElementById('srv-preview-tabs');
+      if (!tabsWrap) {
+        tabsWrap = document.createElement('div');
+        tabsWrap.id = 'srv-preview-tabs';
+        tabsWrap.innerHTML = `
+          <div style="display:flex;gap:6px;margin-bottom:12px;" id="srv-tab-bar">
+            <button class="btn btn-ghost btn-sm srv-tab active" onclick="showSrvTab('tools')" data-tab="tools">Tools <span id="tc" class="badge badge-blue" style="margin-left:4px"></span></button>
+            <button class="btn btn-ghost btn-sm srv-tab" onclick="showSrvTab('resources')" data-tab="resources">Resources <span id="rc" class="badge badge-amber" style="margin-left:4px"></span></button>
+            <button class="btn btn-ghost btn-sm srv-tab" onclick="showSrvTab('prompts')" data-tab="prompts">Prompts <span id="pc" class="badge badge-gray" style="margin-left:4px"></span></button>
+          </div>
+          <div id="srv-tab-tools" class="srv-tab-pane" style="max-height:220px;overflow-y:auto;"></div>
+          <div id="srv-tab-resources" class="srv-tab-pane" style="display:none;max-height:220px;overflow-y:auto;"></div>
+          <div id="srv-tab-prompts" class="srv-tab-pane" style="display:none;max-height:220px;overflow-y:auto;"></div>
+        `;
+        document.getElementById('srv-preview').appendChild(tabsWrap);
+      }
+      
+      tabsWrap.style.display = '';
+      
+      document.getElementById('tc').textContent = preview.tool_count;
+      document.getElementById('rc').textContent = preview.resource_count + (preview.resource_template_count || 0);
+      document.getElementById('pc').textContent = preview.prompt_count;
+
+      document.getElementById('srv-tab-tools').innerHTML = preview.tools.length
+        ? preview.tools.map(t => `<div class="preview-item"><div class="preview-item-name">${t.name}</div><div class="preview-item-desc">${t.description||'—'}</div></div>`).join('')
+        : '<div style="padding:12px;color:var(--text3);font-size:12px">No tools reported</div>';
+
+      const allResources = [...(preview.resources || []), ...(preview.resource_templates || [])];
+      document.getElementById('srv-tab-resources').innerHTML = allResources.length
+        ? allResources.map(r => `<div class="preview-item"><div class="preview-item-name">${r.name||r.uriTemplate||r.uri}</div><div class="preview-item-desc">${r.uriTemplate||r.uri}</div></div>`).join('')
+        : '<div style="padding:12px;color:var(--text3);font-size:12px">No resources reported</div>';
+
+      document.getElementById('srv-tab-prompts').innerHTML = preview.prompts.length
+        ? preview.prompts.map(p => `<div class="preview-item"><div class="preview-item-name">${p.name}</div><div class="preview-item-desc">${p.description||'—'}</div></div>`).join('')
+        : '<div style="padding:12px;color:var(--text3);font-size:12px">No prompts reported</div>';
+
     } else {
-      statusEl.style.background = 'var(--red-dim)'; statusEl.style.border = '1px solid rgba(255,94,94,0.2)'; statusEl.innerHTML = `<span style="color:var(--red);font-weight:500">✕ Unreachable</span><br><span style="color:var(--text3)">${preview.error}</span>`;
-      btn.textContent = 'Register anyway'; _srvPreviewed = true;
+      statusEl.style.background = 'var(--red-dim)';
+      statusEl.style.border = '1px solid rgba(255,94,94,0.2)';
+      statusEl.innerHTML = `<span style="color:var(--red);font-weight:500">✕ Unreachable</span><br><span style="color:var(--text3)">${preview.error}</span>`;
+      btn.textContent = 'Register anyway';
+      _srvPreviewed = true;
+      
+      const tabsWrap = document.getElementById('srv-preview-tabs');
+      if (tabsWrap) tabsWrap.style.display = 'none';
     }
-  } catch (e) { showToast('Preview failed: ' + e.message); } finally { btn.disabled = false; }
+  } catch (e) { 
+    showToast('Preview failed: ' + e.message); 
+  } finally { 
+    btn.disabled = false; 
+  }
 }
+
+function showSrvTab(tab) {
+  document.querySelectorAll('.srv-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.srv-tab-pane').forEach(p => p.style.display = 'none');
+  document.getElementById('srv-tab-' + tab).style.display = '';
+}
+
 async function saveServer() {
   const name = document.getElementById('srv-name').value.trim(); const url = document.getElementById('srv-url').value.trim(); const desc = document.getElementById('srv-desc').value.trim(); const key = document.getElementById('srv-key').value.trim();
   const btn = document.getElementById('srv-main-btn'); btn.textContent = 'Registering…'; btn.disabled = true;
   try { await POST('/admin/servers', { name, url, description: desc, upstream_key: key }); closeModal('modal-server'); showToast('Server registered'); await loadAll(); } catch (e) { showToast('Error: ' + e.message); } finally { btn.disabled = false; }
 }
+
 async function refreshServer(id) { showToast(`Refreshing...`); try { await POST(`/admin/servers/${id}/refresh`, {}); showToast(`Refreshed`); await loadAll(); } catch (e) { showToast('Failed: ' + e.message); } }
 async function deleteServer(id) { if (!confirm(`Remove server?`)) return; try { await DEL(`/admin/servers/${id}`); showToast('Removed'); await loadAll(); } catch (e) { showToast('Error: ' + e.message); } }
 
@@ -606,15 +689,109 @@ async function saveClient() {
   if (!name || !key) return;
   try { await POST('/admin/clients', { name, description: desc, api_key: key }); closeModal('modal-client'); showToast('Client added'); await loadAll(); } catch (e) { showToast('Error: ' + e.message); }
 }
+
 async function deleteClient(id) { if (!confirm(`Remove client?`)) return; try { await DEL(`/admin/clients/${id}`); showToast('Removed'); await loadAll(); } catch (e) { showToast('Error: ' + e.message); } }
 async function editPermsFor(cid) { showPage('permissions'); document.getElementById('perm-client-select').value = cid; await renderPermMatrix(); }
 function showKey(cid) { const c = state.clients.find(c => c.id === cid); document.getElementById('key-modal-client').textContent = c.name; document.getElementById('key-modal-value').textContent = c.key; openModal('modal-key'); }
 function copyKey() { navigator.clipboard.writeText(document.getElementById('key-modal-value').textContent).catch(() => { }); showToast('Copied to clipboard'); }
+
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 document.querySelectorAll('.modal-overlay').forEach(el => { el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); }); });
+
 async function clearLogs() { await DEL('/admin/logs').catch(() => { }); state.logs = []; renderLogs(); }
-async function exportConfig() { try { const cfg = await GET('/admin/export'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })); a.download = 'mcp-config.json'; a.click(); } catch (e) { showToast('Export failed'); } }
-function showToast(msg) { const t = document.createElement('div'); t.textContent = msg; Object.assign(t.style, { position: 'fixed', bottom: '24px', right: '24px', background: 'var(--accent)', color: '#000', padding: '10px 18px', borderRadius: '8px', fontSize: '13px', fontFamily: 'var(--sans)', fontWeight: '500', zIndex: '999', animation: 'slideUp 0.2s ease', boxShadow: '0 4px 16px rgba(0,229,160,0.3)' }); document.body.appendChild(t); setTimeout(() => t.remove(), 2800); }
-async function loadStats() { try { const s = await GET('/admin/stats'); document.getElementById('stat-servers').textContent = s.servers; document.getElementById('stat-clients').textContent = s.clients; document.getElementById('stat-tools').textContent = s.tools; document.getElementById('stat-perms').textContent = s.permissions; } catch (_) { } }
+
+async function exportConfig() { 
+  try { 
+    const cfg = await GET('/admin/export'); 
+    const a = document.createElement('a'); 
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })); 
+    a.download = 'mcp-config.json'; 
+    a.click(); 
+  } catch (e) { showToast('Export failed'); } 
+}
+
+function showToast(msg) { 
+  const t = document.createElement('div'); 
+  t.textContent = msg; 
+  Object.assign(t.style, { position: 'fixed', bottom: '24px', right: '24px', background: 'var(--accent)', color: '#000', padding: '10px 18px', borderRadius: '8px', fontSize: '13px', fontFamily: 'var(--sans)', fontWeight: '500', zIndex: '999', animation: 'slideUp 0.2s ease', boxShadow: '0 4px 16px rgba(0,229,160,0.3)' }); 
+  document.body.appendChild(t); 
+  setTimeout(() => t.remove(), 2800); 
+}
+
+async function loadStats() { 
+  try { 
+    const s = await GET('/admin/stats'); 
+    document.getElementById('stat-servers').textContent = s.servers; 
+    document.getElementById('stat-clients').textContent = s.clients; 
+    document.getElementById('stat-tools').textContent = s.tools; 
+    document.getElementById('stat-perms').textContent = s.permissions; 
+  } catch (_) { } 
+}
+
+// ── BACKGROUND POLLING (NEW) ──────────────────────────────────────
+
+async function silentBackgroundRefresh() {
+  try {
+    // 1. Silently fetch new logs
+    const logs = await GET('/admin/logs?limit=50');
+    state.logs = logs.map(l => ({
+      time: new Date(l.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      method: l.method, client: l.client_name, tool: l.tool, status: l.status
+    }));
+    
+    if (document.getElementById('page-logs').classList.contains('active')) {
+      renderLogs();
+    }
+
+    // 2. Silently update the Top Dashboard Stats
+    await loadStats();
+
+    // 3. Silently check if any servers went offline/online
+    const servers = await GET('/admin/servers');
+    let srvChanged = false;
+    servers.forEach(newSrv => {
+      const oldSrv = state.servers.find(s => s.id === newSrv.id);
+      if (oldSrv && oldSrv.status !== newSrv.status) {
+        oldSrv.status = newSrv.status; 
+        srvChanged = true;
+      }
+    });
+
+    if (srvChanged) {
+      if (document.getElementById('page-dashboard').classList.contains('active')) renderDashServers();
+      if (document.getElementById('page-servers').classList.contains('active')) renderServersTable();
+    }
+
+    // 4. Silently Update Clients & Permissions
+    const clients = await GET('/admin/clients');
+    const updatedClients = await Promise.all(clients.map(async c => {
+      try {
+        const data = await GET(`/admin/clients/${c.id}/permissions`);
+        const perms = {};
+        for (const [sid, tools] of Object.entries(data.permissions || {})) perms[sid] = new Set(tools);
+        return { ...c, desc: c.description, key: c.api_key, perms };
+      } catch (e) {
+        return { ...c, desc: c.description, key: c.api_key, perms: {} };
+      }
+    }));
+    
+    // Save to global state
+    state.clients = updatedClients;
+
+    // Gently re-render tables that display client/permission counts
+    if (document.getElementById('page-dashboard').classList.contains('active')) renderDashClients();
+    if (document.getElementById('page-clients').classList.contains('active')) renderClientsTable();
+
+    // NOTE: We intentionally DO NOT run renderPermMatrix() here. 
+    // If we did, it would wipe out any checkboxes the user clicked before they hit "Save"!
+    
+  } catch (e) {
+    // Ignore network errors in the background loop so we don't spam toasts
+  }
+}
+
+// Run the silent refresh every 3 seconds
+setInterval(silentBackgroundRefresh, 3000);
+
 loadAll();
