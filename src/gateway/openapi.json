@@ -1,0 +1,78 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "JSONPlaceholder Todos API",
+    "version": "1.0.0",
+    "description": "A free fake REST API for testing and prototyping."
+  },
+  "servers": [
+    {
+      "url": "https://jsonplaceholder.typicode.com"
+    }
+  ],
+  "paths": {
+    "/todos": {
+      "get": {
+        "operationId": "getTodos",
+        "summary": "Get a list of todos",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Filter by user ID"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Successful response" }
+        }
+      },
+      "post": {
+        "operationId": "createTodo",
+        "summary": "Create a new todo",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string", "description": "Title of the task" },
+                  "completed": { "type": "boolean" },
+                  "userId": { "type": "integer" }
+                },
+                "required": ["title", "completed", "userId"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created" }
+        }
+      }
+    },
+    "/todos/{id}": {
+      "get": {
+        "operationId": "getTodoById",
+        "summary": "Get a specific todo by its ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "The ID of the todo to fetch"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Successful response" }
+        }
+      }
+    }
+  }
+}

@@ -168,6 +168,12 @@ function renderServersTable() {
   el.innerHTML = `<table><thead><tr><th>Name</th><th>Endpoint</th><th>Server info</th><th>Discovered</th><th>Status</th><th></th></tr></thead><tbody>
     ${state.servers.map(s => {
     const si = s.server_info || {};
+    
+    // Check if this is a Virtual Swagger API
+    const isVirtual = s.url.includes('/virtual/');
+    const apiId = isVirtual ? s.url.split('/virtual/')[1] : '';
+    const authBtn = isVirtual ? `<button class="btn btn-ghost btn-sm" onclick="openUpdateAuthModal('${apiId}')" title="Update Token">🔑</button>` : '';
+
     return `<tr>
         <td class="primary"><span style="font-family:var(--mono)">${s.name}</span></td>
         <td><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">${s.url}/mcp</span></td>
@@ -178,7 +184,11 @@ function renderServersTable() {
           <span class="badge badge-gray" title="Prompts">✦ ${(s.prompts || []).length}</span>
         </td>
         <td>${serverStatusBadge(s)}</td>
-        <td style="display:flex;gap:6px"><button class="btn btn-ghost btn-sm" onclick="refreshServer('${s.id}')" title="Refresh">↻</button><button class="btn btn-danger btn-sm" onclick="deleteServer('${s.id}')">✕</button></td>
+        <td style="display:flex;gap:6px">
+          ${authBtn}
+          <button class="btn btn-ghost btn-sm" onclick="refreshServer('${s.id}')" title="Refresh">↻</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteServer('${s.id}')">✕</button>
+        </td>
       </tr>`;
   }).join('')}
   </tbody></table>`;
@@ -293,7 +303,10 @@ function pgUpdateInputs() {
       const mock = {};
       const req = item.input_schema.required || [];
       req.forEach(k => { mock[k] = item.input_schema.properties[k]?.type === 'number' ? 0 : ""; });
-      if (req.length > 0) schemaStr = JSON.stringify(mock, null, 2);
+      if (Object.keys(item.input_schema.properties || {}).length > 0 && req.length === 0) {
+        Object.keys(item.input_schema.properties).forEach(k => { mock[k] = ""; });
+      }
+      if (Object.keys(mock).length > 0) schemaStr = JSON.stringify(mock, null, 2);
     }
     inputsDiv.innerHTML = `
       <div class="form-group" style="margin:0;">
@@ -404,7 +417,6 @@ async function executePlayground() {
       outEl.style.color = '#00e5a0';
       badgeEl.innerHTML = '<span class="badge badge-green">Success</span>';
 
-      // Format output nicely depending on what it is
       let outputStr = '';
       if (type === 'tools' && data.result?.content) {
         outputStr = data.result.content.map(c => c.text || JSON.stringify(c)).join('\n\n');
@@ -562,7 +574,7 @@ function renderLogs() {
   </tbody></table>`;
 }
 
-// ── Modals & Actions ──────────────────────────────────────────────
+// ── Standard MCP Server Modals & Actions ──────────────────────────────────────────────
 let _srvPreviewed = false;
 
 function openAddServerModal() {
@@ -682,6 +694,266 @@ async function saveServer() {
 async function refreshServer(id) { showToast(`Refreshing...`); try { await POST(`/admin/servers/${id}/refresh`, {}); showToast(`Refreshed`); await loadAll(); } catch (e) { showToast('Failed: ' + e.message); } }
 async function deleteServer(id) { if (!confirm(`Remove server?`)) return; try { await DEL(`/admin/servers/${id}`); showToast('Removed'); await loadAll(); } catch (e) { showToast('Error: ' + e.message); } }
 
+// ── SWAGGER / REST API CONVERSION ───────────────────────────────────────────
+
+let _swgPreviewed = false;
+
+function toggleSwgSource() {
+  const source = document.querySelector('input[name="swg-source"]:checked').value;
+  if (source === 'url') {
+    document.getElementById('swg-url-container').style.display = '';
+    document.getElementById('swg-file-container').style.display = 'none';
+  } else {
+    document.getElementById('swg-url-container').style.display = 'none';
+    document.getElementById('swg-file-container').style.display = '';
+  }
+}
+
+function openAddSwaggerModal() {
+  ['swg-name', 'swg-url', 'swg-headers'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('swg-file').value = '';
+  document.querySelector('input[name="swg-source"][value="url"]').checked = true;
+  toggleSwgSource();
+  
+  document.getElementById('swg-step1').style.display = '';
+  document.getElementById('swg-preview').style.display = 'none';
+  document.getElementById('swg-back-btn').style.display = 'none';
+  document.getElementById('swg-main-btn').textContent = 'Preview API →';
+  document.getElementById('swg-main-btn').disabled = false;
+  _swgPreviewed = false;
+  
+  openModal('modal-swagger');
+}
+
+function swgBack() {
+  document.getElementById('swg-step1').style.display = '';
+  document.getElementById('swg-preview').style.display = 'none';
+  document.getElementById('swg-main-btn').textContent = 'Preview API →';
+  document.getElementById('swg-back-btn').style.display = 'none';
+  _swgPreviewed = false;
+}
+
+async function swgMainAction() {
+  if (!_swgPreviewed) { await previewSwagger(); }
+  else { await saveSwagger(); }
+}
+
+function showSwgTab(tab) {
+  document.querySelectorAll('.swg-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.swg-tab-pane').forEach(p => p.style.display = 'none');
+  document.getElementById('swg-tab-' + tab).style.display = '';
+}
+
+async function previewSwagger() {
+  const name = document.getElementById('swg-name').value.trim();
+  const source = document.querySelector('input[name="swg-source"]:checked').value;
+  
+  if (!name) { alert('Server Name is required.'); return; }
+  
+  let payload = { api_id: name };
+  
+  if (source === 'url') {
+     const url = document.getElementById('swg-url').value.trim();
+     if(!url) { alert("Swagger URL is required."); return; }
+     payload.swagger_url = url;
+  } else {
+     const fileInput = document.getElementById('swg-file');
+     if(!fileInput.files.length) { alert("Please select a JSON file to upload."); return; }
+     
+     const text = await fileInput.files[0].text();
+     try { payload.swagger_json = JSON.parse(text); }
+     catch(e) { alert("Invalid JSON file uploaded."); return; }
+  }
+
+  const btn = document.getElementById('swg-main-btn');
+  btn.textContent = 'Parsing Schema...'; btn.disabled = true;
+
+  try {
+    const previewRes = await fetch(API_BASE + '/admin/swagger/preview', {
+      method: 'POST',
+      headers: headers(), 
+      body: JSON.stringify(payload)
+    });
+    
+    if (!previewRes.ok) {
+      const err = await previewRes.text();
+      throw new Error(err);
+    }
+
+    const preview = await previewRes.json();
+    
+    document.getElementById('swg-step1').style.display = 'none';
+    document.getElementById('swg-preview').style.display = '';
+    document.getElementById('swg-back-btn').style.display = '';
+    
+    const statusEl = document.getElementById('swg-preview-status');
+    
+    if (preview.reachable) {
+      statusEl.style.background = 'var(--accent-dim)';
+      statusEl.style.border = '1px solid rgba(0,229,160,0.25)';
+      statusEl.innerHTML = `<span style="color:var(--accent);font-weight:500">● Schema Parsed</span> &nbsp;·&nbsp; <span style="color:var(--text3);font-family:var(--mono);font-size:11px">${preview.protocol_version}</span>`;
+      btn.textContent = 'Register API';
+      _swgPreviewed = true;
+
+      let tabsWrap = document.getElementById('swg-preview-tabs');
+      if (!tabsWrap) {
+        tabsWrap = document.createElement('div');
+        tabsWrap.id = 'swg-preview-tabs';
+        tabsWrap.innerHTML = `
+          <div style="display:flex;gap:6px;margin-bottom:12px;" id="swg-tab-bar">
+            <button class="btn btn-ghost btn-sm swg-tab active" onclick="showSwgTab('tools')" data-tab="tools">Tools <span id="swg-tc" class="badge badge-blue" style="margin-left:4px"></span></button>
+          </div>
+          <div id="swg-tab-tools" class="swg-tab-pane" style="max-height:220px;overflow-y:auto;"></div>
+        `;
+        document.getElementById('swg-preview').appendChild(tabsWrap);
+      }
+      
+      tabsWrap.style.display = '';
+      document.getElementById('swg-tc').textContent = preview.tool_count;
+
+      document.getElementById('swg-tab-tools').innerHTML = preview.tools.length
+        ? preview.tools.map(t => `<div class="preview-item"><div class="preview-item-name">${t.name}</div><div class="preview-item-desc">${t.description||'—'}</div></div>`).join('')
+        : '<div style="padding:12px;color:var(--text3);font-size:12px">No tools discovered</div>';
+        
+    } else {
+      statusEl.style.background = 'var(--red-dim)';
+      statusEl.style.border = '1px solid rgba(255,94,94,0.2)';
+      statusEl.innerHTML = `<span style="color:var(--red);font-weight:500">✕ Parsing Failed</span><br><span style="color:var(--text3)">${preview.error}</span>`;
+      btn.textContent = 'Try Again';
+      _swgPreviewed = false; // keep false so they can retry
+      
+      const tabsWrap = document.getElementById('swg-preview-tabs');
+      if (tabsWrap) tabsWrap.style.display = 'none';
+    }
+
+  } catch (e) {
+    showToast('Preview failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveSwagger() {
+  const name = document.getElementById('swg-name').value.trim();
+  const source = document.querySelector('input[name="swg-source"]:checked').value;
+  const headersRaw = document.getElementById('swg-headers').value.trim();
+  
+  let payload = { api_id: name, headers: {} };
+  
+  if (headersRaw) {
+    try { payload.headers = JSON.parse(headersRaw); } 
+    catch(e) { alert("Invalid JSON format in the Custom Headers field."); return; }
+  }
+
+  if (source === 'url') {
+     payload.swagger_url = document.getElementById('swg-url').value.trim();
+  } else {
+     const fileInput = document.getElementById('swg-file');
+     const text = await fileInput.files[0].text();
+     payload.swagger_json = JSON.parse(text);
+  }
+
+  const btn = document.getElementById('swg-main-btn');
+  btn.textContent = 'Registering...'; btn.disabled = true;
+
+  try {
+    const adapterRes = await fetch(API_BASE + '/admin/swagger/generate', {
+      method: 'POST',
+      headers: headers(), 
+      body: JSON.stringify(payload)
+    });
+
+    if (!adapterRes.ok) {
+      const err = await adapterRes.text();
+      throw new Error(err);
+    }
+
+    const adapterData = await adapterRes.json();
+    const virtualMcpUrl = adapterData.base_url; 
+
+    // Register into SQLite
+    await POST('/admin/servers', {
+      name: name,
+      url: virtualMcpUrl,
+      description: `Auto-converted REST API`,
+      upstream_key: ''
+    });
+
+    // Force instant handshake sync
+    const allServers = await GET('/admin/servers');
+    const newServer = allServers.find(s => s.name === name);
+    if (newServer) {
+        await POST(`/admin/servers/${newServer.id}/refresh`, {});
+    }
+
+    closeModal('modal-swagger');
+    showToast(`API ${name} registered successfully!`);
+    await loadAll();
+
+  } catch (e) {
+    showToast('Failed to register API: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Register API';
+  }
+}
+
+// ── AUTO-REFRESH / HOT-SWAP TOKEN LOGIC ──────────────────────────────────────
+
+function openUpdateAuthModal(apiId) {
+  document.getElementById('auth-api-id').value = apiId;
+  document.getElementById('auth-headers-json').value = '{\n  "Authorization": "Bearer CURRENT_TOKEN"\n}';
+  
+  ['ar-url', 'ar-payload', 'ar-key', 'ar-header', 'ar-prefix', 'ar-expiry'].forEach(id => {
+      document.getElementById(id).value = '';
+  });
+  
+  openModal('modal-update-auth');
+}
+
+async function submitUpdateAuth() {
+  const apiId = document.getElementById('auth-api-id').value;
+  const headersRaw = document.getElementById('auth-headers-json').value.trim();
+  
+  let payload = { headers: {} };
+  
+  if (headersRaw) {
+    try { payload.headers = JSON.parse(headersRaw); } 
+    catch(e) { alert("Invalid JSON format in the Static Headers field."); return; }
+  }
+
+  const arUrl = document.getElementById('ar-url').value.trim();
+  if (arUrl) {
+    let arPayload = {};
+    try { 
+      const rawPayload = document.getElementById('ar-payload').value.trim();
+      if (rawPayload) arPayload = JSON.parse(rawPayload); 
+    } catch(e) { 
+      alert("Invalid JSON in Auto-Refresh Credentials Payload"); return; 
+    }
+
+    payload.auto_refresh = {
+      endpoint: arUrl,
+      payload: arPayload,
+      extract_key: document.getElementById('ar-key').value.trim() || 'access_token',
+      header_name: document.getElementById('ar-header').value.trim() || 'Authorization',
+      header_prefix: document.getElementById('ar-prefix').value || '',
+      expiry_seconds: parseInt(document.getElementById('ar-expiry').value) || 3600,
+      last_fetched: 0 
+    };
+  } else {
+    payload.auto_refresh = null; 
+  }
+
+  try {
+    await PATCH(`/admin/swagger/${apiId}/headers`, payload);
+    closeModal('modal-update-auth');
+    showToast('Authentication updated successfully!');
+  } catch (e) {
+    showToast('Failed to update headers: ' + e.message);
+  }
+}
+
 function openAddClientModal() { ['cli-name', 'cli-desc', 'cli-key'].forEach(id => document.getElementById(id).value = ''); openModal('modal-client'); }
 function generateKey() { const uuid = window.crypto.randomUUID(); document.getElementById('cli-key').value = 'sk-mcp-' + uuid.replace(/-/g, ''); }
 async function saveClient() {
@@ -729,11 +1001,10 @@ async function loadStats() {
   } catch (_) { } 
 }
 
-// ── BACKGROUND POLLING (NEW) ──────────────────────────────────────
+// ── BACKGROUND POLLING ──────────────────────────────────────
 
 async function silentBackgroundRefresh() {
   try {
-    // 1. Silently fetch new logs
     const logs = await GET('/admin/logs?limit=50');
     state.logs = logs.map(l => ({
       time: new Date(l.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
@@ -744,10 +1015,8 @@ async function silentBackgroundRefresh() {
       renderLogs();
     }
 
-    // 2. Silently update the Top Dashboard Stats
     await loadStats();
 
-    // 3. Silently check if any servers went offline/online
     const servers = await GET('/admin/servers');
     let srvChanged = false;
     servers.forEach(newSrv => {
@@ -763,7 +1032,6 @@ async function silentBackgroundRefresh() {
       if (document.getElementById('page-servers').classList.contains('active')) renderServersTable();
     }
 
-    // 4. Silently Update Clients & Permissions
     const clients = await GET('/admin/clients');
     const updatedClients = await Promise.all(clients.map(async c => {
       try {
@@ -776,22 +1044,14 @@ async function silentBackgroundRefresh() {
       }
     }));
     
-    // Save to global state
     state.clients = updatedClients;
 
-    // Gently re-render tables that display client/permission counts
     if (document.getElementById('page-dashboard').classList.contains('active')) renderDashClients();
     if (document.getElementById('page-clients').classList.contains('active')) renderClientsTable();
-
-    // NOTE: We intentionally DO NOT run renderPermMatrix() here. 
-    // If we did, it would wipe out any checkboxes the user clicked before they hit "Save"!
     
-  } catch (e) {
-    // Ignore network errors in the background loop so we don't spam toasts
-  }
+  } catch (e) {}
 }
 
-// Run the silent refresh every 3 seconds
 setInterval(silentBackgroundRefresh, 3000);
 
 loadAll();
