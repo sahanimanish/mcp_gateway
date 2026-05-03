@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, Text, ForeignKey, JSON
+from sqlalchemy import Column, String, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -13,6 +14,19 @@ Base = declarative_base()
 
 def new_id():
     return str(uuid.uuid4())[:8]
+
+
+class VirtualAPIConfig(Base):
+    __tablename__ = "virtual_api_configs"
+
+    api_id = Column(String, primary_key=True, index=True)
+    base_url = Column(String, nullable=False)
+    headers = Column(JSON, default={})
+    auto_refresh = Column(JSON, nullable=True)
+    tools = Column(JSON, default=[])
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
 
 class MCPServer(Base):
     __tablename__ = "servers"

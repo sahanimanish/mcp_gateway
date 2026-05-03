@@ -1,40 +1,30 @@
-import json
-import os
 import re
 import time
 import httpx
 import jsonref
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy.orm.attributes import flag_modified
+
+# IMPORTANT: Ensure these match your actual project imports!
+from gateway.database import get_db, VirtualAPIConfig 
 from gateway.auth import require_admin
 
 router = APIRouter()
-
-VIRTUAL_APIS_FILE = "virtual_apis.json"
-
-def load_virtual_apis():
-    if os.path.exists(VIRTUAL_APIS_FILE):
-        try:
-            with open(VIRTUAL_APIS_FILE, "r") as f:
-                return json.load(f)
-        except Exception: pass
-    return {}
-
-VIRTUAL_APIS = load_virtual_apis()
-
-def save_virtual_apis():
-    with open(VIRTUAL_APIS_FILE, "w") as f:
-        json.dump(VIRTUAL_APIS, f)
 
 def rpc_ok(rpc_id, result): return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
 def rpc_error(rpc_id, code, message): return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
 
 # --- CORE PARSING ENGINE ---
 async def parse_swagger_schema(swagger_url, swagger_json):
-    """Parses a Swagger URL or JSON object and extracts MCP tools."""
+    """Parses a Swagger URL or JSON object, resolves $refs, and extracts MCP tools."""
     if swagger_json:
+        # Resolve any internal $refs in the uploaded JSON file
         spec = jsonref.replace_refs(swagger_json)
     else:
+        # Fetch from URL and resolve both internal and external $refs
         async with httpx.AsyncClient() as client:
             resp = await client.get(swagger_url)
             spec = jsonref.loads(resp.text)
@@ -64,21 +54,25 @@ async def parse_swagger_schema(swagger_url, swagger_json):
             properties = {}
             required = []
             
+            # 1. Parse Path and Query Parameters
             for p in details.get("parameters", []):
                 name = p.get("name")
                 if not name: continue
                 properties[name] = {"type": p.get("schema", {}).get("type", "string"), "description": p.get("description", "")}
                 if p.get("required"): required.append(name)
 
+            # 2. Parse and Flatten the Request Body
             req_body = details.get("requestBody")
             if req_body and "content" in req_body:
                 json_schema = req_body["content"].get("application/json", {}).get("schema", {})
                 
+                # If it's a standard object, merge its properties directly into the tool arguments
                 if json_schema.get("type") == "object" and "properties" in json_schema:
                     for k, v in json_schema["properties"].items():
                         properties[k] = {"type": v.get("type", "string"), "description": v.get("description", "")}
                         if k in json_schema.get("required", []): required.append(k)
                 else:
+                    # Fallback for arrays or primitives in the body
                     properties["request_body"] = {"type": "object", "description": "JSON payload"}
                     if req_body.get("required"): required.append("request_body")
 
@@ -92,7 +86,7 @@ async def parse_swagger_schema(swagger_url, swagger_json):
             
     return target_base_url, tools
 
-# --- ENDPOINTS ---
+# --- ROUTING ENDPOINTS ---
 
 @router.post("/admin/swagger/preview", dependencies=[Depends(require_admin)])
 async def preview_mcp_from_swagger(request: Request):
@@ -121,8 +115,8 @@ async def preview_mcp_from_swagger(request: Request):
 
 
 @router.post("/admin/swagger/generate", dependencies=[Depends(require_admin)])
-async def generate_mcp_from_swagger(request: Request):
-    """Parses a schema and saves it as a virtual server."""
+async def generate_mcp_from_swagger(request: Request, db: AsyncSession = Depends(get_db)):
+    """Parses a schema and saves it as a virtual server to the Database."""
     payload = await request.json()
     api_id = payload.get("api_id")
     swagger_url = payload.get("swagger_url")
@@ -134,13 +128,25 @@ async def generate_mcp_from_swagger(request: Request):
     try:
         target_base_url, tools = await parse_swagger_schema(swagger_url, swagger_json)
 
-        VIRTUAL_APIS[api_id] = {
-            "base_url": target_base_url,
-            "headers": custom_headers,
-            "auto_refresh": None, 
-            "tools": tools
-        }
-        save_virtual_apis()
+        # Check if it already exists to update, or create new
+        result = await db.execute(select(VirtualAPIConfig).where(VirtualAPIConfig.api_id == api_id))
+        db_config = result.scalars().first()
+        
+        if db_config:
+            db_config.base_url = target_base_url
+            db_config.headers = custom_headers
+            db_config.tools = tools
+        else:
+            db_config = VirtualAPIConfig(
+                api_id=api_id,
+                base_url=target_base_url,
+                headers=custom_headers,
+                auto_refresh=None,
+                tools=tools
+            )
+            db.add(db_config)
+            
+        await db.commit()
 
         virtual_url = str(request.base_url).rstrip("/") + f"/virtual/{api_id}"
         return JSONResponse({"message": "Success", "base_url": virtual_url})
@@ -150,25 +156,37 @@ async def generate_mcp_from_swagger(request: Request):
 
 
 @router.patch("/admin/swagger/{api_id}/headers", dependencies=[Depends(require_admin)])
-async def update_virtual_api_headers(api_id: str, request: Request):
+async def update_virtual_api_headers(api_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """Hot-swaps headers and configures the JIT auto-refresher."""
     payload = await request.json()
-    new_headers = payload.get("headers", {})
-    auto_refresh = payload.get("auto_refresh", None)
+    
+    result = await db.execute(select(VirtualAPIConfig).where(VirtualAPIConfig.api_id == api_id))
+    db_config = result.scalars().first()
 
-    if api_id not in VIRTUAL_APIS: return JSONResponse({"error": f"Virtual API '{api_id}' not found"}, status_code=404)
+    if not db_config: 
+        return JSONResponse({"error": f"Virtual API '{api_id}' not found"}, status_code=404)
 
-    VIRTUAL_APIS[api_id]["headers"] = new_headers
-    VIRTUAL_APIS[api_id]["auto_refresh"] = auto_refresh
-    save_virtual_apis()
+    db_config.headers = payload.get("headers", {})
+    db_config.auto_refresh = payload.get("auto_refresh", None)
+    
+    flag_modified(db_config, "headers")
+    flag_modified(db_config, "auto_refresh")
+    
+    await db.commit()
     return JSONResponse({"message": "Authentication updated successfully"})
 
 
 @router.post("/virtual/{api_id}/mcp")
-async def virtual_mcp_endpoint(api_id: str, request: Request):
-    if api_id not in VIRTUAL_APIS:
+async def virtual_mcp_endpoint(api_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """The virtual MCP endpoint that proxies requests to the actual REST API."""
+    
+    # Fetch configuration from the Database
+    result = await db.execute(select(VirtualAPIConfig).where(VirtualAPIConfig.api_id == api_id))
+    db_config = result.scalars().first()
+
+    if not db_config:
         return JSONResponse(rpc_error(0, -32601, f"Virtual API '{api_id}' not found."), status_code=404)
 
-    api_data = VIRTUAL_APIS[api_id]
     body = await request.json()
     method = body.get("method", "")
     rpc_id = body.get("id")
@@ -181,19 +199,21 @@ async def virtual_mcp_endpoint(api_id: str, request: Request):
         }))
 
     if method == "tools/list":
-        return JSONResponse(rpc_ok(rpc_id, {"tools": [{"name": t["name"], "description": t["description"], "inputSchema": t["inputSchema"]} for t in api_data["tools"]]}))
+        return JSONResponse(rpc_ok(rpc_id, {
+            "tools": [{"name": t["name"], "description": t["description"], "inputSchema": t["inputSchema"]} for t in db_config.tools]
+        }))
 
     if method == "tools/call":
         params = body.get("params", {})
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
 
-        tool_conf = next((t for t in api_data["tools"] if t["name"] == tool_name), None)
+        tool_conf = next((t for t in db_config.tools if t["name"] == tool_name), None)
         if not tool_conf: return JSONResponse(rpc_error(rpc_id, -32601, "Tool not found"))
 
         # --- JUST-IN-TIME TOKEN REFRESHER ---
-        if api_data.get("auto_refresh"):
-            ar = api_data["auto_refresh"]
+        if db_config.auto_refresh:
+            ar = db_config.auto_refresh
             now = time.time()
             if now - ar.get("last_fetched", 0) > (ar.get("expiry_seconds", 3600) - 60):
                 try:
@@ -203,29 +223,49 @@ async def virtual_mcp_endpoint(api_id: str, request: Request):
                         t_data = t_resp.json()
                         new_token = t_data.get(ar["extract_key"])
                         if new_token:
-                            api_data["headers"][ar["header_name"]] = ar.get("header_prefix", "") + str(new_token)
-                            api_data["auto_refresh"]["last_fetched"] = now
-                            save_virtual_apis()
+                            # Safely update the JSON fields
+                            headers_copy = db_config.headers.copy() if db_config.headers else {}
+                            headers_copy[ar["header_name"]] = ar.get("header_prefix", "") + str(new_token)
+                            db_config.headers = headers_copy
+                            
+                            ar_copy = ar.copy()
+                            ar_copy["last_fetched"] = now
+                            db_config.auto_refresh = ar_copy
+                            
+                            flag_modified(db_config, "headers")
+                            flag_modified(db_config, "auto_refresh")
+                            await db.commit() # Save token so other pods can use it
                 except Exception as e: print(f"Token auto-refresh failed for {api_id}: {e}")
         # ----------------------------------------
 
-        url = api_data["base_url"].rstrip("/") + tool_conf["path"]
+        url = db_config.base_url.rstrip("/") + tool_conf["path"]
         args_copy = arguments.copy()
 
+        # Inject Path Params
         path_vars = re.findall(r'\{(.*?)\}', url)
         for pv in path_vars:
             if pv in args_copy: url = url.replace(f"{{{pv}}}", str(args_copy.pop(pv)))
 
+        # Assign leftover arguments to Query Params or Body
         query_params, json_body = None, None
-        if "request_body" in args_copy: json_body = args_copy.pop("request_body")
+        if "request_body" in args_copy: 
+            json_body = args_copy.pop("request_body")
         
         if args_copy:
-            if tool_conf["method"] in ["GET", "DELETE"]: query_params = args_copy
-            else: json_body = json_body or args_copy
+            if tool_conf["method"] in ["GET", "DELETE"]: 
+                query_params = args_copy
+            else: 
+                json_body = json_body or args_copy
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.request(method=tool_conf["method"], url=url, headers=api_data["headers"], params=query_params, json=json_body)
+                resp = await client.request(
+                    method=tool_conf["method"], 
+                    url=url, 
+                    headers=db_config.headers, 
+                    params=query_params, 
+                    json=json_body
+                )
                 output = f"Status: {resp.status_code}\n\n{resp.text}"
                 return JSONResponse(rpc_ok(rpc_id, {"content": [{"type": "text", "text": output}]}))
         except Exception as e:
