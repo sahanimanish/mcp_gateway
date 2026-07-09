@@ -1,0 +1,63 @@
+# ============================================================
+# CONFLUENCE PAT-BASED SCRAPER CONFIGURATION
+# No Selenium needed — uses Confluence REST API + PAT token
+# ============================================================
+
+# --- Confluence Connection ---
+confluence:
+  base_url: "https://your-org.atlassian.net/wiki"   # Your Confluence base URL
+  pat_token: "YOUR_PAT_TOKEN_HERE"                   # Personal Access Token
+  api_version: "v2"                                  # v1 or v2 (Cloud uses v2)
+
+# --- What to scrape ---
+# Option A: Provide specific page IDs
+target_pages:
+  page_ids:
+    - "123456789"
+    - "987654321"
+
+  # Option B: Scrape an entire space (comment out page_ids above and use this)
+  # space_key: "ENG"
+  # label: "requirements"        # Optional: filter pages by label
+
+# --- Content Structure Selectors ---
+# Confluence pages render as HTML — map your CSS classes here
+# Inspect via: GET /wiki/rest/api/content/{id}?expand=body.storage
+selectors:
+
+  # Requirement category block
+  category:
+    container: "h2"                        # Tag/class wrapping each category heading
+    title: "h2"                            # The category title element
+
+  # Questionnaire blocks inside each category
+  questionnaire:
+    container: ".questionnaire-item"       # Wraps each questionnaire
+    title: ".question-title"               # Questionnaire heading
+    description: ".question-description"   # Description text
+    relevant_links: ".relevant-links a"    # Dedicated links section
+    other_details: ".question-details"     # Any other detail block
+
+  # Links inside descriptions → scraped as nested children
+  description_links:
+    tag: "a"
+    scrape_linked_page: true               # Visit & scrape each link found in description
+
+  # What to extract from linked child Confluence pages
+  linked_page:
+    title: "h1"
+    content_container: ".wiki-content"     # Confluence default content wrapper
+
+# --- Scraping Behaviour ---
+options:
+  scrape_description_links: true           # Recursively scrape links inside descriptions
+  only_internal_links: true                # Only follow links within same Confluence instance
+  max_link_depth: 1                        # How deep to follow nested links (1 = one level)
+  request_delay: 0.5                       # Seconds between API calls (be polite)
+  timeout: 30                              # Request timeout in seconds
+
+# --- Output ---
+output:
+  file_path: "confluence_output.json"
+  indent: 2
+  include_raw_html: false                  # Set true to save raw HTML per page

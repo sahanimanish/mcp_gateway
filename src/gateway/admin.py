@@ -5,7 +5,7 @@ from sqlalchemy.orm import selectinload
 from typing import List
 
 from gateway.database import (
-    get_db, MCPServer, MCPTool, MCPResource, MCPPrompt,
+    get_db, MCPServer, MCPTool, MCPResource, MCPPrompt, MCPResourceTemplate,
     Client, Permission, ActivityLog, new_id
 )
 from gateway.schemas import (
@@ -33,6 +33,7 @@ def _server_load_opts():
     return (
         selectinload(MCPServer.tools),
         selectinload(MCPServer.resources),
+        selectinload(MCPServer.resource_templates), # Load templates
         selectinload(MCPServer.prompts),
     )
 
@@ -70,22 +71,23 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 async def preview_server(body: ServerCreate):
     """
     Probe a server URL and return what it exposes — without saving anything.
-    The UI calls this first to show the user what will be discovered.
     """
     result = await reg.discover(body.url, body.name, body.upstream_key or "")
 
     return DiscoveryPreview(
-        reachable        = result.success,
-        error            = result.error,
-        protocol_version = result.protocol_version,
-        server_info      = result.server_info,
-        capabilities     = result.capabilities,
-        tool_count       = len(result.tools),
-        resource_count   = len(result.resources),
-        prompt_count     = len(result.prompts),
-        tools     = [{"name": t.raw_name, "description": t.description} for t in result.tools],
-        resources = [{"uri": r.uri, "name": r.name, "mimeType": r.mime_type} for r in result.resources],
-        prompts   = [{"name": p.name, "description": p.description} for p in result.prompts],
+        reachable               = result.success,
+        error                   = result.error,
+        protocol_version        = result.protocol_version,
+        server_info             = result.server_info,
+        capabilities            = result.capabilities,
+        tool_count              = len(result.tools),
+        resource_count          = len(result.resources),
+        prompt_count            = len(result.prompts),
+        resource_template_count = len(result.templates), # Maps from registry object
+        tools              = [{"name": t.raw_name, "description": t.description} for t in result.tools],
+        resources          = [{"uri": r.uri, "name": r.name, "mimeType": r.mime_type} for r in result.resources],
+        prompts            = [{"name": p.name, "description": p.description} for p in result.prompts],
+        resource_templates = [{"uriTemplate": t.uri_template, "name": t.name} for t in result.templates],
     )
 
 
@@ -117,7 +119,6 @@ async def create_server(body: ServerCreate, db: AsyncSession = Depends(get_db)):
     if existing:
         raise HTTPException(409, f"Server '{body.url}' already registered")
 
-    # Create server record first
     server = MCPServer(
         id           = new_id(),
         name         = body.name,
@@ -129,12 +130,10 @@ async def create_server(body: ServerCreate, db: AsyncSession = Depends(get_db)):
     db.add(server)
     await db.flush()
 
-    # Run full MCP discovery
     discovery = await reg.discover(server.url, server.name, server.upstream_key)
     await reg.save_discovery(db, server, discovery)
 
     if not discovery.success:
-        # Still save the server — it might come online later
         server.status = "offline"
         await db.commit()
 
@@ -178,6 +177,7 @@ async def delete_server(server_id: str, db: AsyncSession = Depends(get_db)):
     await db.execute(delete(Permission).where(Permission.server_id == server_id))
     await db.execute(delete(MCPTool).where(MCPTool.server_id == server_id))
     await db.execute(delete(MCPResource).where(MCPResource.server_id == server_id))
+    await db.execute(delete(MCPResourceTemplate).where(MCPResourceTemplate.server_id == server_id))
     await db.execute(delete(MCPPrompt).where(MCPPrompt.server_id == server_id))
     await db.delete(server)
     await db.commit()
@@ -186,7 +186,6 @@ async def delete_server(server_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/servers/{server_id}/refresh", response_model=ServerOut)
 async def refresh_server(server_id: str, db: AsyncSession = Depends(get_db)):
-    """Re-run full MCP discovery against an already-registered server."""
     server = (await db.execute(
         select(MCPServer).where(MCPServer.id == server_id)
     )).scalar_one_or_none()
@@ -205,14 +204,13 @@ async def refresh_server(server_id: str, db: AsyncSession = Depends(get_db)):
 
 
 # ══════════════════════════════════════════════════════════════
-# CLIENTS
+# CLIENTS & PERMISSIONS
 # ══════════════════════════════════════════════════════════════
 
 @router.get("/clients", response_model=List[ClientOut])
 async def list_clients(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Client).order_by(Client.created_at))
     return result.scalars().all()
-
 
 @router.post("/clients", response_model=ClientOut, status_code=201)
 async def create_client(body: ClientCreate, db: AsyncSession = Depends(get_db)):
@@ -224,7 +222,6 @@ async def create_client(body: ClientCreate, db: AsyncSession = Depends(get_db)):
     await db.refresh(client)
     await log_action(db, "client/add", "admin", "—", 201, f"Added client {body.name}")
     return client
-
 
 @router.patch("/clients/{client_id}", response_model=ClientOut)
 async def update_client(client_id: str, body: ClientUpdate, db: AsyncSession = Depends(get_db)):
@@ -238,7 +235,6 @@ async def update_client(client_id: str, body: ClientUpdate, db: AsyncSession = D
     await db.refresh(client)
     return client
 
-
 @router.delete("/clients/{client_id}", status_code=204)
 async def delete_client(client_id: str, db: AsyncSession = Depends(get_db)):
     client = (await db.execute(select(Client).where(Client.id == client_id))).scalar_one_or_none()
@@ -248,11 +244,6 @@ async def delete_client(client_id: str, db: AsyncSession = Depends(get_db)):
     await db.delete(client)
     await db.commit()
     await log_action(db, "client/delete", "admin", "—", 200, f"Deleted {client.name}")
-
-
-# ══════════════════════════════════════════════════════════════
-# PERMISSIONS
-# ══════════════════════════════════════════════════════════════
 
 @router.get("/clients/{client_id}/permissions", response_model=ClientPermsSummary)
 async def get_permissions(client_id: str, db: AsyncSession = Depends(get_db)):
@@ -264,7 +255,6 @@ async def get_permissions(client_id: str, db: AsyncSession = Depends(get_db)):
     for p in perms:
         grouped.setdefault(p.server_id, []).append(p.tool_name)
     return ClientPermsSummary(client_id=client_id, client_name=client.name, permissions=grouped)
-
 
 @router.put("/clients/{client_id}/permissions", response_model=ClientPermsSummary)
 async def set_permissions(client_id: str, body: PermissionSet, db: AsyncSession = Depends(get_db)):
@@ -286,7 +276,6 @@ async def set_permissions(client_id: str, body: PermissionSet, db: AsyncSession 
     await db.commit()
     await log_action(db, "permission/save", "admin", "—", 200, f"Set {count} permissions for {client.name}")
     return ClientPermsSummary(client_id=client_id, client_name=client.name, permissions=body.permissions)
-
 
 @router.get("/permissions/matrix")
 async def permissions_matrix(db: AsyncSession = Depends(get_db)):
@@ -319,7 +308,7 @@ async def permissions_matrix(db: AsyncSession = Depends(get_db)):
 
 
 # ══════════════════════════════════════════════════════════════
-# LOGS
+# LOGS & EXPORT
 # ══════════════════════════════════════════════════════════════
 
 @router.get("/logs", response_model=List[LogOut])
@@ -335,10 +324,6 @@ async def clear_logs(db: AsyncSession = Depends(get_db)):
     await db.execute(delete(ActivityLog))
     await db.commit()
 
-
-# ══════════════════════════════════════════════════════════════
-# EXPORT
-# ══════════════════════════════════════════════════════════════
 
 @router.get("/export")
 async def export_config(db: AsyncSession = Depends(get_db)):
@@ -360,9 +345,10 @@ async def export_config(db: AsyncSession = Depends(get_db)):
                 "name": s.name, "url": s.url, "description": s.description,
                 "protocol_version": s.protocol_version,
                 "server_info": s.server_info,
-                "tools":     [{"name": t.raw_name, "description": t.description} for t in s.tools],
-                "resources": [{"uri": r.uri, "name": r.name} for r in s.resources],
-                "prompts":   [{"name": p.name, "description": p.description} for p in s.prompts],
+                "tools":              [{"name": t.raw_name, "description": t.description} for t in s.tools],
+                "resources":          [{"uri": r.uri, "name": r.name} for r in s.resources],
+                "resource_templates": [{"uriTemplate": t.uri_template, "name": t.name} for t in s.resource_templates],
+                "prompts":            [{"name": p.name, "description": p.description} for p in s.prompts],
             }
             for s in servers
         ],

@@ -1,0 +1,65 @@
+# ============================================================
+# SCRAPER CONFIGURATION
+# Fill in your site details and HTML class/selector mappings
+# ============================================================
+
+# --- Site & Auth ---
+site:
+  base_url: "https://your-site.com"
+  login_url: "https://your-site.com/login"
+  credentials:
+    username: "YOUR_USERNAME"
+    password: "YOUR_PASSWORD"
+  login_selectors:s
+    username_field: "input[name='username']"   # CSS selector for username input
+    password_field: "input[name='password']"   # CSS selector for password input
+    submit_button: "button[type='submit']"      # CSS selector for login button
+  login_success_indicator: ".dashboard"         # Element that appears after successful login
+
+# --- Pages to scrape ---
+# List all URLs that contain requirement categories
+target_pages:
+  - "https://your-site.com/requirements/page1"
+  - "https://your-site.com/requirements/page2"
+
+# --- HTML Structure Selectors ---
+# Fill these in based on your page's DevTools inspection
+selectors:
+
+  # The top-level requirement category (e.g., "Security", "Compliance")
+  category:
+    container: ".category-container"       # Wraps each category block
+    title: ".category-title"               # The category heading text
+
+  # Each questionnaire item inside a category
+  questionnaire:
+    container: ".questionnaire-item"       # Wraps each questionnaire
+    title: ".question-title"               # Questionnaire title/heading
+    description: ".question-description"   # Description text block
+    relevant_links: ".relevant-links a"    # Anchor tags for relevant links
+    other_details: ".question-details"     # Any other detail block (optional)
+
+  # For links found inside descriptions — these get scraped as nested children
+  description_links:
+    tag: "a"                               # Tag to look for inside description
+    extract_href: true                     # Whether to extract the href
+    scrape_linked_page: true              # Whether to visit & scrape the linked page
+
+  # What to extract from a linked child page
+  linked_page:
+    content_container: ".main-content"    # Main content area of linked pages
+    title: "h1"                           # Title element on linked page
+    body_text: ".content-body"            # Body text on linked page
+
+# --- Selenium Settings ---
+selenium:
+  headless: true                           # Set false to watch the browser
+  wait_timeout: 10                         # Seconds to wait for elements to load
+  page_load_wait: 3                        # Extra seconds after page load (for JS)
+  implicit_wait: 5
+
+# --- Output Settings ---
+output:
+  file_path: "output.json"
+  indent: 2                                # JSON indentation spaces
+  include_raw_html: false                  # Set true to also save raw HTML per item

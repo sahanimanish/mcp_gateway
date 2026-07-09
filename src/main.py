@@ -21,6 +21,14 @@ from fastapi.staticfiles import StaticFiles
 from gateway.database import init_db, AsyncSessionLocal
 from gateway.admin import router as admin_router
 from gateway.proxy import router as proxy_router
+# Add this near your other imports:
+from gateway.swagger import router as swagger_router 
+
+
+
+
+
+
 from gateway import registry
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s  %(message)s")
@@ -64,6 +72,7 @@ app.add_middleware(
 
 app.include_router(admin_router)
 app.include_router(proxy_router)
+app.include_router(swagger_router)
 # ── Serve Static Assets ──────────────────────────────────────────
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui")

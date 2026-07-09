@@ -11,7 +11,7 @@ async def get_client_by_key(
 ):
     """
     Validates X-Api-Key header.
-    Returns (client, allowed_tools_set).
+    Returns (client, allowed_capabilities_set).
     Raises 401 if key missing/invalid or client inactive.
     """
     if not x_api_key:
@@ -27,13 +27,14 @@ async def get_client_by_key(
     if not client.is_active:
         raise HTTPException(status_code=403, detail="Client is deactivated")
 
-    # Load allowed tools
+    # Load all allowed capabilities (tools, resources, prompts)
+    # Note: We store all capability names/URIs in the 'tool_name' database column
     perms = await db.execute(
         select(Permission).where(Permission.client_id == client.id)
     )
-    allowed_tools = {p.tool_name for p in perms.scalars().all()}
+    allowed_capabilities = {p.tool_name for p in perms.scalars().all()}
 
-    return client, allowed_tools
+    return client, allowed_capabilities
 
 
 async def require_admin(x_admin_key: Optional[str] = Header(None)):
@@ -46,3 +47,4 @@ async def require_admin(x_admin_key: Optional[str] = Header(None)):
     admin_key = os.getenv("ADMIN_KEY", "admin-secret-change-me")
     if x_admin_key != admin_key:
         raise HTTPException(status_code=401, detail="Invalid admin key")
+    return x_admin_key

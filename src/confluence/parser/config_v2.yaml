@@ -1,0 +1,60 @@
+# ============================================================
+# CONFLUENCE PAT-BASED SCRAPER CONFIGURATION
+# No Selenium needed — uses Confluence REST API + PAT token
+# ============================================================
+
+# --- Confluence Connection ---
+confluence:
+  base_url: "https://your-org.atlassian.net/wiki"    # Your Confluence base URL
+  pat_token: "YOUR_PAT_TOKEN_HERE"                   # Personal Access Token
+
+# --- What to scrape ---
+# Option A: Provide specific page IDs
+target_pages:
+  page_ids:
+    - "123456789"
+    - "987654321"
+
+  # Option B: Scrape an entire space (comment out page_ids above and use this)
+  # space_key: "ENG"
+  # label: "requirements"        # Optional: filter pages by label
+
+# --- Content Structure Selectors ---
+selectors:
+
+  # Requirement category block
+  category:
+    container: "h2"                        
+    title: "h2"                            
+
+  # Questionnaire blocks inside each category
+  questionnaire:
+    container: ".questionnaire-item"       
+    title: ".question-title"               
+    description: ".question-description"   
+    relevant_links: ".relevant-links a"    
+    other_details: ".question-details"     
+
+  # Links inside descriptions → scraped as nested children
+  description_links:
+    tag: "a"
+    scrape_linked_page: true               
+
+  # What to extract from linked child Confluence pages
+  linked_page:
+    title: "h1"
+    content_container: ".wiki-content"     
+
+# --- Scraping Behaviour ---
+options:
+  scrape_description_links: true           
+  only_internal_links: true                
+  max_link_depth: 2                        
+  request_delay: 0.5                       
+  timeout: 30                              
+
+# --- Output ---
+output:
+  output_dir: "confluence_exports"         # Changed to a directory instead of a single file
+  indent: 2
+  include_raw_html: false

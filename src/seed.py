@@ -100,6 +100,8 @@ async def seed():
                         client_id=cli.id,
                         server_id=sid,
                         tool_name=prefixed,
+                        permission_type="tool",
+                        permission_value=prefixed,
                     ))
 
         await db.commit()

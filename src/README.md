@@ -142,17 +142,47 @@ curl -X POST http://localhost:8000/mcp \
   -H "X-Api-Key: key-analyst-xk9p2m" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 
+# List visible prompts
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: key-analyst-xk9p2m" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"prompts/list","params":{}}'
+
+# Get a prompt from a namespaced server prompt
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: key-analyst-xk9p2m" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"database__summarize_notes","arguments":{"notes":"First point. Second point."}}}'
+
+# List visible resources
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: key-analyst-xk9p2m" \
+  -d '{"jsonrpc":"2.0","id":5,"method":"resources/list","params":{}}'
+
+# List visible resource templates
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: key-analyst-xk9p2m" \
+  -d '{"jsonrpc":"2.0","id":6,"method":"resources/templates/list","params":{}}'
+
+# Read a resource through the gateway
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: key-analyst-xk9p2m" \
+  -d '{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"memo://welcome"}}'
+
 # Call an allowed tool
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: key-analyst-xk9p2m" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"database__query","arguments":{"message":"SELECT 1"}}}'
+  -d '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"database__echo","arguments":{"message":"SELECT 1"}}}'
 
 # Try a forbidden tool → 403
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: key-analyst-xk9p2m" \
-  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"database__delete","arguments":{}}}'
+  -d '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"database__delete","arguments":{}}}'
 ```
 
 ---
